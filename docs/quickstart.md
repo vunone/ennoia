@@ -1,7 +1,7 @@
 # Quickstart
 
-Five-minute walkthrough: install Ennoia, declare a schema, index a
-document, run a hybrid search. Uses a local Ollama instance and
+Five-minute walkthrough: install Ennoia, declare a **DDI Schema**, run
+pre-indexing, and issue a hybrid search. Uses a local Ollama instance and
 sentence-transformers — no keys, no containers.
 
 ## 1. Prerequisites

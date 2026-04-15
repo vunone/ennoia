@@ -7,7 +7,7 @@ existing one.
 ## Dev setup
 
 ```bash
-git clone https://github.com/ennoia-ai/ennoia
+git clone https://github.com/vunone/ennoia
 cd ennoia
 uv venv
 source .venv/bin/activate

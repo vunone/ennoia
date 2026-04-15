@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ennoia"
-version = "0.1.0"
-description = "A framework for LLM-powered document pre-indexing and hybrid retrieval."
+version = "0.1.1"
+description = "Declarative Document Indexing (DDI) Schemas for RAG — LLM-powered pre-indexing and hybrid retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE.txt"]
 authors = [{ name = "Ennoia contributors" }]
-keywords = ["rag", "retrieval", "indexing", "llm", "pydantic", "hybrid-search"]
+keywords = ["rag", "retrieval", "indexing", "llm", "pydantic", "hybrid-search", "ddi-schemas", "pre-indexing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -51,10 +51,10 @@ dev = [
 ennoia = "ennoia.cli.main:app"
 
 [project.urls]
-Documentation = "https://github.com/ennoia-ai/ennoia"
-Source = "https://github.com/ennoia-ai/ennoia"
-Issues = "https://github.com/ennoia-ai/ennoia/issues"
-Changelog = "https://github.com/ennoia-ai/ennoia/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/vunone/ennoia"
+Source = "https://github.com/vunone/ennoia"
+Issues = "https://github.com/vunone/ennoia/issues"
+Changelog = "https://github.com/vunone/ennoia/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ennoia"]

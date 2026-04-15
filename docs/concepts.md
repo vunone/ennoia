@@ -1,9 +1,15 @@
 # Concepts
 
-Ennoia is a framework for turning documents into *filterable* retrieval
-indices. It exists because vanilla RAG loses information: dumping raw text
-into a vector store and hoping cosine similarity recovers relevance
-flattens metadata that the document actually contains.
+Ennoia introduces **Declarative Document Indexing Schemas (DDI Schemas)**
+for RAG — a pre-indexing approach where LLM-powered extraction is defined
+through schemas and executed *before* documents enter any store,
+replacing naive chunk-and-embed with structured, queryable indices.
+
+> Traditional RAG is like feeding your documents through a shredder and
+> then trying to answer questions by pulling out strips of paper one by
+> one. Ennoia is like reading each document first, taking structured
+> notes on what matters, and then searching your notes — while keeping
+> the originals on the shelf.
 
 ## The indexing model
 
