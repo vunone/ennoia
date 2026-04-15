@@ -1,7 +1,7 @@
 # Ennoia
 
-[![CI](https://github.com/ennoia-ai/ennoia/actions/workflows/ci.yml/badge.svg)](https://github.com/ennoia-ai/ennoia/actions/workflows/ci.yml)
-[![coverage](https://codecov.io/gh/ennoia-ai/ennoia/branch/main/graph/badge.svg)](https://codecov.io/gh/ennoia-ai/ennoia)
+[![CI](https://github.com/vunone/ennoia/actions/workflows/ci.yml/badge.svg)](https://github.com/vunone/ennoia/actions/workflows/ci.yml)
+[![coverage](https://codecov.io/gh/vunone/ennoia/branch/main/graph/badge.svg)](https://codecov.io/gh/vunone/ennoia)
 [![PyPI](https://img.shields.io/pypi/v/ennoia.svg)](https://pypi.org/project/ennoia/)
 [![Python](https://img.shields.io/pypi/pyversions/ennoia.svg)](https://pypi.org/project/ennoia/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE.txt)
