@@ -1,0 +1,102 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ennoia"
+version = "0.1.0"
+description = "A framework for LLM-powered document pre-indexing and hybrid retrieval."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE.txt"]
+authors = [{ name = "Ennoia contributors" }]
+keywords = ["rag", "retrieval", "indexing", "llm", "pydantic", "hybrid-search"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+ollama = ["ollama>=0.3"]
+openai = ["openai>=1.40"]
+anthropic = ["anthropic>=0.34"]
+sentence-transformers = ["sentence-transformers>=3", "numpy>=1.26"]
+filesystem = ["pyarrow>=15", "pandas>=2.1", "numpy>=1.26"]
+cli = ["typer>=0.12"]
+all = [
+    "ennoia[ollama,openai,anthropic,sentence-transformers,filesystem,cli]",
+]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "pyright>=1.1",
+    "coverage[toml]>=7.5",
+    "respx>=0.21",
+]
+
+[project.scripts]
+ennoia = "ennoia.cli.main:app"
+
+[project.urls]
+Documentation = "https://github.com/ennoia-ai/ennoia"
+Source = "https://github.com/ennoia-ai/ennoia"
+Issues = "https://github.com/ennoia-ai/ennoia/issues"
+Changelog = "https://github.com/ennoia-ai/ennoia/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ennoia"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer callbacks pass ``typer.Option()`` / ``typer.Argument()`` as defaults.
+"ennoia/cli/main.py" = ["B008"]
+# Tests exercise typing aliases and intentionally verbose rows.
+"tests/*" = ["UP007", "UP045"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["ennoia"]
+exclude = ["**/.venv", "**/__pycache__", "**/node_modules"]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+
+[tool.coverage.run]
+branch = true
+source = ["ennoia"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
