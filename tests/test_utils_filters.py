@@ -294,3 +294,62 @@ def test_apply_filters_handles_mixed_missing_and_present_fields():
         ("c", {"year": 2024}),  # missing cat
     ]
     assert apply_filters(records, {"cat": "legal", "year__gte": 2020}) == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# parse_bool — string forms + error
+# ---------------------------------------------------------------------------
+
+
+from ennoia.utils.filters import parse_bool  # noqa: E402
+
+
+@pytest.mark.parametrize("truthy", ["true", "True", "1", "yes", "Y", "  true  "])
+def test_parse_bool_accepts_string_truthy_values(truthy: str) -> None:
+    assert parse_bool(truthy) is True
+
+
+@pytest.mark.parametrize("falsy", ["false", "False", "0", "no", "N", "  false  "])
+def test_parse_bool_accepts_string_falsy_values(falsy: str) -> None:
+    assert parse_bool(falsy) is False
+
+
+@pytest.mark.parametrize("bad", ["maybe", "", "yep", "nope"])
+def test_parse_bool_rejects_unknown_strings(bad: str) -> None:
+    with pytest.raises(ValueError, match="Cannot parse boolean"):
+        parse_bool(bad)
+
+
+@pytest.mark.parametrize("bad", [5, 3.14, None, [], {}])
+def test_parse_bool_rejects_non_bool_non_str_values(bad: Any) -> None:
+    with pytest.raises(ValueError, match="Cannot parse boolean"):
+        parse_bool(bad)
+
+
+# ---------------------------------------------------------------------------
+# evaluate_condition — type-mismatch short-circuits
+# ---------------------------------------------------------------------------
+
+
+def test_startswith_on_list_returns_false() -> None:
+    # ``startswith`` against a list-typed record value must short-circuit
+    # rather than raising; the field/op pair is semantically invalid.
+    assert evaluate_condition({"tags": ["a", "b"]}, "tags", "startswith", "a") is False
+
+
+def test_contains_on_non_string_scalar_returns_false() -> None:
+    # ``contains`` expects string or list; an int record value yields False.
+    assert evaluate_condition({"n": 5}, "n", "contains", "5") is False
+
+
+def test_contains_with_non_string_value_returns_false() -> None:
+    # String record but non-string candidate — treated as no match.
+    assert evaluate_condition({"note": "hello"}, "note", "contains", 3) is False
+
+
+def test_contains_all_on_non_list_record_returns_false() -> None:
+    assert evaluate_condition({"tags": "not-a-list"}, "tags", "contains_all", "a") is False
+
+
+def test_contains_any_on_non_list_record_returns_false() -> None:
+    assert evaluate_condition({"tags": "not-a-list"}, "tags", "contains_any", "a") is False

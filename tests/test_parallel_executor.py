@@ -10,6 +10,8 @@ import pytest
 pytest.importorskip("numpy")
 
 from ennoia import BaseStructure, Pipeline, Store
+from ennoia.adapters.embedding import EmbeddingAdapter
+from ennoia.adapters.llm import LLMAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
@@ -25,7 +27,7 @@ class B(BaseStructure):
     value: str
 
 
-class TimingLLM:
+class TimingLLM(LLMAdapter):
     """LLM fake that records concurrency — how many calls overlap in time."""
 
     def __init__(self) -> None:
@@ -47,11 +49,8 @@ class TimingLLM:
         return "topic"
 
 
-class FakeEmbedding:
-    def embed_document(self, text: str) -> list[float]:
-        return [1.0]
-
-    def embed_query(self, text: str) -> list[float]:
+class FakeEmbedding(EmbeddingAdapter):
+    async def embed(self, text: str) -> list[float]:
         return [1.0]
 
 

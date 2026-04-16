@@ -8,6 +8,10 @@ implemented backend fails loudly with ``TypeError``. Shared helper logic
 :mod:`ennoia.utils`, not here, because backends with very different storage
 models (in-memory vs SQL vs managed engines) can reuse the helpers a la
 carte without being forced into a common implementation shape.
+
+Every method is async. Even backends that perform no I/O (in-memory stores)
+expose async methods so the pipeline doesn't have to branch on backend type;
+trivial implementations just don't ``await`` anything internally.
 """
 
 from __future__ import annotations
@@ -22,20 +26,20 @@ class StructuredStore(ABC):
     """Persists structural extractions and answers metadata filters."""
 
     @abstractmethod
-    def upsert(self, source_id: str, data: dict[str, Any]) -> None: ...
+    async def upsert(self, source_id: str, data: dict[str, Any]) -> None: ...
 
     @abstractmethod
-    def filter(self, query: dict[str, Any]) -> list[str]: ...
+    async def filter(self, query: dict[str, Any]) -> list[str]: ...
 
     @abstractmethod
-    def get(self, source_id: str) -> dict[str, Any] | None: ...
+    async def get(self, source_id: str) -> dict[str, Any] | None: ...
 
 
 class VectorStore(ABC):
     """Persists semantic embeddings and answers similarity queries."""
 
     @abstractmethod
-    def upsert(
+    async def upsert(
         self,
         vector_id: str,
         vector: list[float],
@@ -43,7 +47,7 @@ class VectorStore(ABC):
     ) -> None: ...
 
     @abstractmethod
-    def search(
+    async def search(
         self,
         query_vector: list[float],
         top_k: int,
@@ -55,7 +59,7 @@ class HybridStore(ABC):
     """A single backend that natively does both structured filter and vector search."""
 
     @abstractmethod
-    def upsert(
+    async def upsert(
         self,
         source_id: str,
         data: dict[str, Any],
@@ -63,7 +67,7 @@ class HybridStore(ABC):
     ) -> None: ...
 
     @abstractmethod
-    def hybrid_search(
+    async def hybrid_search(
         self,
         filters: dict[str, Any],
         query_vector: list[float],
@@ -71,4 +75,4 @@ class HybridStore(ABC):
     ) -> list[tuple[str, float, dict[str, Any]]]: ...
 
     @abstractmethod
-    def get(self, source_id: str) -> dict[str, Any] | None: ...
+    async def get(self, source_id: str) -> dict[str, Any] | None: ...

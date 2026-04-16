@@ -10,17 +10,16 @@ if unset, so environments that export the var work without passing the key.
 
 from __future__ import annotations
 
-import json
 import os
-from typing import Any, cast
+from typing import Any
 
-from ennoia.index.exceptions import ExtractionError
+from ennoia.adapters.llm.base import LLMAdapter, parse_json_object
 from ennoia.utils.imports import require_module
 
 __all__ = ["OpenAIAdapter"]
 
 
-class OpenAIAdapter:
+class OpenAIAdapter(LLMAdapter):
     def __init__(
         self,
         model: str,
@@ -50,17 +49,7 @@ class OpenAIAdapter:
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content or ""
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as err:
-            raise ExtractionError(
-                f"OpenAI returned non-JSON content despite response_format=json_object: {content!r}"
-            ) from err
-        if not isinstance(parsed, dict):
-            raise ExtractionError(
-                f"Expected a JSON object from OpenAI, got {type(parsed).__name__}."
-            )
-        return cast(dict[str, Any], parsed)
+        return parse_json_object(content, "OpenAI")
 
     async def complete_text(self, prompt: str) -> str:
         client = self._new_client()

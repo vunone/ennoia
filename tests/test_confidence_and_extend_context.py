@@ -9,6 +9,8 @@ import pytest
 pytest.importorskip("numpy")
 
 from ennoia import BaseSemantic, BaseStructure, Pipeline, Store
+from ennoia.adapters.embedding import EmbeddingAdapter
+from ennoia.adapters.llm import LLMAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
@@ -33,7 +35,7 @@ class Parent(BaseStructure):
         return []
 
 
-class RecordingLLM:
+class RecordingLLM(LLMAdapter):
     def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
         self._responses = responses
         self.prompts: list[str] = []
@@ -50,11 +52,8 @@ class RecordingLLM:
         return "topic"
 
 
-class FakeEmbedding:
-    def embed_document(self, text: str) -> list[float]:
-        return [1.0, 0.0]
-
-    def embed_query(self, text: str) -> list[float]:
+class FakeEmbedding(EmbeddingAdapter):
+    async def embed(self, text: str) -> list[float]:
         return [1.0, 0.0]
 
 
@@ -93,10 +92,12 @@ def test_low_confidence_skips_child() -> None:
 
 
 def test_confidence_stripped_from_store_payload() -> None:
+    import asyncio
+
     llm = RecordingLLM({"Extract parent fields.": {"label": "x", "_confidence": 0.5}})
     pipeline = _pipeline(llm)
     pipeline.index(text="body", source_id="d3")
-    stored = pipeline.store.structured.get("d3")
+    stored = asyncio.run(pipeline.store.structured.get("d3"))
     # Child did not fire at 0.5 confidence; its 'detail' field is null-filled
     # from the superschema so every document has a uniform column set.
     assert stored == {"label": "x", "detail": None}

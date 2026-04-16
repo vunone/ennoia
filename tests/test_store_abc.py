@@ -40,7 +40,7 @@ def test_instantiating_hybrid_abc_raises():
 
 def test_partial_structured_impl_raises():
     class Partial(StructuredStore):  # missing filter() and get()
-        def upsert(self, source_id, data):  # type: ignore[no-untyped-def]
+        async def upsert(self, source_id, data):  # type: ignore[no-untyped-def]
             pass
 
     with pytest.raises(TypeError):

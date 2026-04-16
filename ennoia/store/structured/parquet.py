@@ -6,11 +6,16 @@ targets). Filtering loads the records into memory and delegates to
 :func:`apply_filters` so operator semantics stay identical to every other
 backend.
 
+``pyarrow`` / ``pandas`` are sync libraries with no async API; the read /
+write paths are wrapped in :func:`asyncio.to_thread` so the event loop
+stays responsive while parquet I/O is in flight.
+
 Requires the ``filesystem`` extra (``pyarrow`` + ``pandas``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -28,6 +33,9 @@ class ParquetStructuredStore(StructuredStore):
         self.path.mkdir(parents=True, exist_ok=True)
         self._file = self.path / "structured.parquet"
         self._records: dict[str, dict[str, Any]] = {}
+        # Eager load is sync because ``__init__`` cannot be async; the
+        # file lives on the local disk and the dataset targeted by this
+        # backend is dev/ops scale.
         self._load()
 
     def _load(self) -> None:
@@ -41,7 +49,7 @@ class ParquetStructuredStore(StructuredStore):
             if isinstance(raw, str) and raw:
                 self._records[str(source_id)] = dict(json.loads(raw))
 
-    def _flush(self) -> None:
+    def _flush_sync(self) -> None:
         pd = require_module("pandas", "filesystem")
         rows = [
             {"__source_id__": sid, "__data__": json.dumps(data, default=str)}
@@ -49,13 +57,13 @@ class ParquetStructuredStore(StructuredStore):
         ]
         pd.DataFrame(rows).to_parquet(self._file, index=False)
 
-    def upsert(self, source_id: str, data: dict[str, Any]) -> None:
+    async def upsert(self, source_id: str, data: dict[str, Any]) -> None:
         self._records[source_id] = dict(data)
-        self._flush()
+        await asyncio.to_thread(self._flush_sync)
 
-    def get(self, source_id: str) -> dict[str, Any] | None:
+    async def get(self, source_id: str) -> dict[str, Any] | None:
         record = self._records.get(source_id)
         return dict(record) if record is not None else None
 
-    def filter(self, query: dict[str, Any]) -> list[str]:
+    async def filter(self, query: dict[str, Any]) -> list[str]:
         return apply_filters(self._records.items(), query)

@@ -41,6 +41,15 @@ ennoia index ./docs \
   --embedding sentence-transformers:all-MiniLM-L6-v2
 ```
 
+By default, independent schemas in a layer extract in parallel via
+`asyncio.gather`. On a resource-constrained machine running local
+Ollama, pass `--no-threads` to serialise LLM and embedding calls
+(equivalent to `Pipeline(..., concurrency=1)`):
+
+```bash
+ennoia index ./docs --schema my_schemas.py --store ./my_index --no-threads
+```
+
 ## `ennoia search` — hybrid search
 
 ```bash

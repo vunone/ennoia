@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any, cast
+from typing import Any
 
-from ennoia.index.exceptions import ExtractionError
+from ennoia.adapters.llm.base import LLMAdapter, parse_json_object
 from ennoia.utils.imports import require_module
 
 __all__ = ["OllamaAdapter"]
 
 
-class OllamaAdapter:
+class OllamaAdapter(LLMAdapter):
     """Adapter for a locally running Ollama instance.
 
     Requires the `ollama` extra: `pip install ennoia[ollama]`.
@@ -42,18 +41,7 @@ class OllamaAdapter:
             format="json",
         )
         content = response["message"]["content"]
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as err:
-            raise ExtractionError(
-                f"Ollama returned non-JSON content despite format=json: {content!r}"
-            ) from err
-        if not isinstance(parsed, dict):
-            raise ExtractionError(
-                f"Expected a JSON object from Ollama, got {type(parsed).__name__}."
-            )
-        # json.loads returns dict[Any, Any]; our contract is dict[str, Any].
-        return cast(dict[str, Any], parsed)
+        return parse_json_object(content, "Ollama")
 
     async def complete_text(self, prompt: str) -> str:
         client = self._new_client()

@@ -39,6 +39,18 @@ def test_missing_colon_rejected() -> None:
         parse_llm_spec("ollama")
 
 
+def test_empty_prefix_rejected() -> None:
+    # Partition on ``:`` gives an empty prefix — the explicit 'Malformed'
+    # error fires separately from the missing-colon path.
+    with pytest.raises(typer.BadParameter, match="Malformed"):
+        parse_llm_spec(":model")
+
+
+def test_empty_model_rejected() -> None:
+    with pytest.raises(typer.BadParameter, match="Malformed"):
+        parse_llm_spec("ollama:")
+
+
 def test_embedding_sentence_transformers() -> None:
     adapter = parse_embedding_spec("sentence-transformers:all-MiniLM-L6-v2")
     assert hasattr(adapter, "embed_query")

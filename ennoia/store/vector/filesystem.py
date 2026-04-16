@@ -10,12 +10,17 @@ Upserts rewrite all three files — the same read-modify-write idiom as
 :class:`ennoia.store.structured.parquet.ParquetStructuredStore`. Search
 delegates to the shared :func:`ennoia.store.vector._numpy.cosine_search`.
 
+``numpy`` and the standard ``Path.read_text`` / ``Path.write_text`` calls
+are sync; the upsert path dispatches the disk I/O via
+:func:`asyncio.to_thread` so the event loop stays responsive.
+
 Requires the ``filesystem`` or ``sentence-transformers`` extra (either pulls
 in ``numpy``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -62,16 +67,16 @@ class FilesystemVectorStore(VectorStore):
         self._ids_file.write_text(json.dumps(ids))
         self._metadata_file.write_text(json.dumps(metadata, default=str))
 
-    def upsert(
+    async def upsert(
         self,
         vector_id: str,
         vector: list[float],
         metadata: dict[str, Any],
     ) -> None:
         self._entries[vector_id] = (list(vector), dict(metadata))
-        self._flush()
+        await asyncio.to_thread(self._flush)
 
-    def search(
+    async def search(
         self,
         query_vector: list[float],
         top_k: int,

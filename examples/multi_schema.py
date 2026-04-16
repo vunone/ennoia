@@ -9,9 +9,9 @@ schema queues a child via `extend()`) are exercised in
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 
-from ennoia import BaseSemantic, BaseStructure, Pipeline, Store
+from ennoia import BaseSemantic, BaseStructure, Field, Pipeline, Store
 from ennoia.adapters.embedding.sentence_transformers import SentenceTransformerEmbedding
 from ennoia.adapters.llm.ollama import OllamaAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
@@ -21,7 +21,7 @@ class DocMeta(BaseStructure):
     """Extract basic document metadata."""
 
     category: Literal["legal", "medical", "financial"]
-    doc_date: date
+    doc_date: Annotated[date, Field(description="Datetime in ISO 8601 format")]
 
 
 class Provenance(BaseStructure):

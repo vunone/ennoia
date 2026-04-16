@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ennoia"
-version = "0.2.0"
+version = "0.2.1"
 description = "Declarative Document Indexing (DDI) Schemas for RAG — LLM-powered pre-indexing and hybrid retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +46,7 @@ dev = [
     "pyright>=1.1",
     "coverage[toml]>=7.5",
     "respx>=0.21",
+    "ennoia[all]",
 ]
 
 [project.scripts]
@@ -96,6 +98,7 @@ source = ["ennoia"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+fail_under = 100
 exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",

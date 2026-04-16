@@ -11,6 +11,15 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "aiosqlite"
+version = "0.22.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -285,9 +294,10 @@ wheels = [
 
 [[package]]
 name = "ennoia"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
+    { name = "aiosqlite" },
     { name = "pydantic" },
 ]
 
@@ -309,13 +319,21 @@ cli = [
     { name = "typer" },
 ]
 dev = [
+    { name = "anthropic" },
     { name = "coverage", extra = ["toml"] },
+    { name = "numpy" },
+    { name = "ollama" },
+    { name = "openai" },
+    { name = "pandas" },
+    { name = "pyarrow" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "respx" },
     { name = "ruff" },
+    { name = "sentence-transformers" },
+    { name = "typer" },
 ]
 filesystem = [
     { name = "numpy" },
@@ -335,8 +353,10 @@ sentence-transformers = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.20" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.34" },
     { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.5" },
+    { name = "ennoia", extras = ["all"], marker = "extra == 'dev'" },
     { name = "ennoia", extras = ["ollama", "openai", "anthropic", "sentence-transformers", "filesystem", "cli"], marker = "extra == 'all'" },
     { name = "numpy", marker = "extra == 'filesystem'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'sentence-transformers'", specifier = ">=1.26" },

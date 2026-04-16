@@ -23,7 +23,7 @@ from ennoia.index.extractor import extract_semantic, extract_structural
 from ennoia.index.pipeline import Pipeline
 from ennoia.schema.base import BaseSemantic, BaseStructure
 from ennoia.store.composite import Store
-from ennoia.utils.filters import KNOWN_OPERATORS, parse_bool, split_filter_key
+from ennoia.utils.filters import parse_bool, split_filter_key
 
 __all__ = ["app"]
 
@@ -78,8 +78,6 @@ def _parse_filters(raw: list[str]) -> dict[str, Any]:
             raise typer.BadParameter(f"Filter must be 'key=value', got {item!r}.")
         key, _, value = item.partition("=")
         field, operator = split_filter_key(key.strip())
-        if operator not in KNOWN_OPERATORS:
-            raise typer.BadParameter(f"Unknown operator {operator!r} in filter {item!r}.")
         final_key = f"{field}__{operator}" if operator != "eq" else field
         parsed[final_key] = _coerce_filter_value(value, operator)
     return parsed
@@ -138,6 +136,14 @@ def index_command(
     store: Path = typer.Option(..., "--store", help="Filesystem store directory."),
     llm: str = typer.Option("ollama:qwen3:0.6b", "--llm"),
     embedding: str = typer.Option("sentence-transformers:all-MiniLM-L6-v2", "--embedding"),
+    no_threads: bool = typer.Option(
+        False,
+        "--no-threads",
+        help=(
+            "Serialise LLM and embedding calls (concurrency=1). "
+            "Use with local backends (Ollama) on resource-constrained machines."
+        ),
+    ),
 ) -> None:
     """Index every file in ``directory`` against the declared schemas."""
     if not directory.is_dir():
@@ -149,6 +155,7 @@ def index_command(
         store=Store.from_path(store),
         llm=parse_llm_spec(llm),
         embedding=parse_embedding_spec(embedding),
+        concurrency=1 if no_threads else None,
     )
 
     indexed = 0
@@ -183,6 +190,14 @@ def search_command(
     top_k: int = typer.Option(5, "--top-k"),
     llm: str = typer.Option("ollama:qwen3:0.6b", "--llm"),
     embedding: str = typer.Option("sentence-transformers:all-MiniLM-L6-v2", "--embedding"),
+    no_threads: bool = typer.Option(
+        False,
+        "--no-threads",
+        help=(
+            "Serialise LLM and embedding calls (concurrency=1). "
+            "Use with local backends (Ollama) on resource-constrained machines."
+        ),
+    ),
 ) -> None:
     """Search the filesystem store with optional structured filters."""
     filters = _parse_filters(filters_raw)
@@ -193,6 +208,7 @@ def search_command(
         store=Store.from_path(store),
         llm=parse_llm_spec(llm),
         embedding=parse_embedding_spec(embedding),
+        concurrency=1 if no_threads else None,
     )
 
     # CLI values arrive as strings; coerce against store records at eval time.

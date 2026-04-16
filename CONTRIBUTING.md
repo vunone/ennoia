@@ -36,8 +36,9 @@ or `# noqa` comments are not accepted.
 
 - Every new module ships with a test module under `tests/`.
 - Tests use pytest, `pytest-asyncio` (auto mode), and hand-rolled fakes.
-  No mocking library is required in the default test path — the
-  pipeline's protocols make structural typing cheap.
+  No mocking library is required in the default test path — fake adapters
+  inherit the thin `LLMAdapter` / `EmbeddingAdapter` ABCs from
+  `ennoia/adapters/{llm,embedding}/base.py`.
 - Optional-dependency tests guard with `pytest.importorskip(...)` so the
   default install can run a useful subset.
 - Integration tests against live external services (Qdrant, OpenAI,

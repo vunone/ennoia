@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-pytest.importorskip("openai")
-
+import ennoia.adapters.llm.openai as openai_module
 from ennoia.adapters.llm.openai import OpenAIAdapter
 from ennoia.index.exceptions import ExtractionError
 
@@ -76,3 +76,36 @@ def test_api_key_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "from-env")
     adapter = OpenAIAdapter(model="gpt-x")
     assert adapter.api_key == "from-env"
+
+
+class _AsyncOpenAISpy:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+
+
+def _patch_openai_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_module = SimpleNamespace(AsyncOpenAI=_AsyncOpenAISpy)
+    monkeypatch.setattr(openai_module, "require_module", lambda *_args: fake_module)
+
+
+def test_new_client_passes_all_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_openai_module(monkeypatch)
+    adapter = OpenAIAdapter(
+        model="gpt-x", api_key="sk-test", base_url="https://proxy.local", timeout=12.0
+    )
+    client = adapter._new_client()
+    assert isinstance(client, _AsyncOpenAISpy)
+    assert client.kwargs == {
+        "api_key": "sk-test",
+        "base_url": "https://proxy.local",
+        "timeout": 12.0,
+    }
+
+
+def test_new_client_omits_unset_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_openai_module(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    adapter = OpenAIAdapter(model="gpt-x")
+    client = adapter._new_client()
+    # No api_key / base_url when unset — lets the SDK handle its own resolution.
+    assert client.kwargs == {"timeout": 60.0}
