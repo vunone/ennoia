@@ -8,55 +8,35 @@ regardless of which structured backend is mounted.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ennoia.index.exceptions import FilterValidationError
-from ennoia.schema.base import BaseStructure
-from ennoia.schema.operators import describe_field, is_filterable
 from ennoia.utils.filters import split_filter_key
 
-__all__ = ["build_filter_contract", "validate_filters"]
+if TYPE_CHECKING:
+    from ennoia.schema.merging import Superschema
 
-
-def build_filter_contract(
-    schemas: list[type[BaseStructure]],
-) -> dict[str, dict[str, Any]]:
-    """Collapse every structural schema's fields into ``{name: descriptor}``.
-
-    Later schemas override earlier ones on name collision (mirrors the behavior
-    of :func:`ennoia.schema.describe`). Non-filterable fields are excluded
-    entirely, so a ``validate_filters`` lookup on them reports *unknown field*
-    — the correct signal for agents that should never reference them.
-    """
-    contract: dict[str, dict[str, Any]] = {}
-    for schema in schemas:
-        for name, info in schema.model_fields.items():
-            if not is_filterable(info):
-                contract.pop(name, None)
-                continue
-            record = describe_field(name, info)
-            if record is not None:
-                contract[name] = record
-    return contract
+__all__ = ["validate_filters"]
 
 
 def validate_filters(
     filters: dict[str, Any] | None,
-    schemas: list[type[BaseStructure]],
+    superschema: Superschema,
 ) -> None:
-    """Validate ``filters`` against the combined contract of ``schemas``.
+    """Validate ``filters`` against the pipeline's unified superschema.
 
-    Raises :class:`FilterValidationError` on the first offending entry.
+    The superschema is the single source of truth for the field space — it
+    contains every reachable structural field (flat or namespaced) with its
+    merged operator list. Raises :class:`FilterValidationError` on the first
+    offending entry.
     """
     if not filters:
         return
 
-    contract = build_filter_contract(schemas)
-
     for key in filters:
         field_name, operator = split_filter_key(key)
 
-        if field_name not in contract:
+        if field_name not in superschema.fields:
             raise FilterValidationError(
                 field=field_name,
                 operator=operator,
@@ -65,9 +45,9 @@ def validate_filters(
                 ),
             )
 
-        supported = contract[field_name].get("operators", [])
+        supported = superschema.fields[field_name].operators
         if operator not in supported:
-            type_label = contract[field_name].get("type", "unknown")
+            type_label = superschema.fields[field_name].type_label
             raise FilterValidationError(
                 field=field_name,
                 operator=operator,

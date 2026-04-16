@@ -86,26 +86,39 @@ class DocMeta(BaseStructure):
 ## Schema discovery
 
 `ennoia.describe(schemas)` returns the canonical filter contract — the
-same payload an MCP server exposes over `discover_schema()`. For the
-`CaseDocument` + `Holding` pair above it produces:
+same payload an MCP server exposes over `discover_schema()`. The shape
+reflects the **superschema**: fields from every class reachable via
+`Schema.extensions` (see [schemas.md](schemas.md#extension-manifest))
+are merged into a unified field space. Namespaced schemas contribute
+fields under the `{namespace}__{field}` convention.
 
 ```json
 {
   "structural_fields": [
     {"name": "jurisdiction", "type": "enum", "options": ["WA", "NY", "TX"],
-     "operators": ["eq", "in"]},
-    {"name": "date_decided", "type": "date",
-     "operators": ["eq", "gt", "gte", "lt", "lte"]},
-    {"name": "tags", "type": "list", "item_type": "str",
-     "operators": ["contains", "contains_all", "contains_any"]},
-    {"name": "overruled_by", "type": "str", "nullable": true,
-     "operators": ["eq", "contains", "startswith", "is_null"]}
+     "operators": ["eq", "in"], "sources": ["CaseDocument"], "description": null},
+    {"name": "citation", "type": "enum",
+     "options": ["federal", "state", "international"],
+     "operators": ["eq", "in"],
+     "sources": ["OldCaseFormat", "NewCaseFormat"],
+     "description": "Case citation.",
+     "has_divergent_descriptions": false},
+    {"name": "wa__court_type", "type": "enum",
+     "options": ["appellate", "supreme", "district"],
+     "operators": ["eq", "in"],
+     "sources": ["WashingtonDetails"],
+     "description": "Washington state court type."}
   ],
   "semantic_indices": [
     {"name": "Holding", "description": "What is the core legal holding of this case?"}
   ]
 }
 ```
+
+`sources` lists every class contributing to that field (one entry for
+single-source fields, multiple for merged). `has_divergent_descriptions`
+is present only when a field has more than one source, set to `true`
+when the contributing descriptions differ.
 
 ## Validation errors
 

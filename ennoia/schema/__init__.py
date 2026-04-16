@@ -18,39 +18,21 @@ __all__ = [
 def describe(
     schemas: list[type[BaseStructure] | type[BaseSemantic]],
 ) -> dict[str, Any]:
-    """Return the combined discovery payload for a set of schemas.
+    """Return the superschema discovery payload for ``schemas``.
 
-    Shape follows ``docs/filters.md §Schema Discovery``:
+    ``schemas`` is the list of root schemas (the same set passed to
+    ``Pipeline(schemas=...)``). The function computes the emission
+    manifest (transitive closure of ``Schema.extensions``) and the
+    superschema, then renders the JSON discovery payload documented in
+    ``docs/filters.md §Schema Discovery``.
 
-    - ``structural_fields``: flattened list of per-field records from every
-      ``BaseStructure`` subclass (later schemas override earlier ones on name
-      collision — keeps the output deterministic for overlapping fields).
-    - ``semantic_indices``: one entry per ``BaseSemantic`` subclass with its
-      docstring as the agent-readable description.
+    Fields from schemas reachable via ``Schema.extensions`` appear
+    correctly merged — flat by default, prefixed under ``{namespace}__``
+    when a source declares ``Schema.namespace``.
     """
-    structural_fields: list[dict[str, Any]] = []
-    seen_field_names: set[str] = set()
-    semantic_indices: list[dict[str, Any]] = []
+    from ennoia.schema.manifest import build_manifest
+    from ennoia.schema.merging import build_superschema
 
-    for cls in schemas:
-        if issubclass(cls, BaseSemantic):
-            semantic_indices.append(
-                {
-                    "name": cls.__name__,
-                    "description": cls.extract_prompt(),
-                }
-            )
-        else:
-            for field_record in cls.describe_schema()["fields"]:
-                if field_record["name"] in seen_field_names:
-                    # Replace the earlier record — last declaration wins.
-                    structural_fields = [
-                        f for f in structural_fields if f["name"] != field_record["name"]
-                    ]
-                structural_fields.append(field_record)
-                seen_field_names.add(field_record["name"])
-
-    return {
-        "structural_fields": structural_fields,
-        "semantic_indices": semantic_indices,
-    }
+    manifest = build_manifest(schemas)
+    superschema = build_superschema(manifest)
+    return superschema.to_discovery_payload()

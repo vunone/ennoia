@@ -21,6 +21,8 @@ __all__ = [
     "field_metadata",
     "infer_operators",
     "is_filterable",
+    "type_label",
+    "unwrap_optional",
 ]
 
 ENNOIA_FIELD_METADATA_KEY = "ennoia"
@@ -36,7 +38,7 @@ _BOOL_OPERATORS: tuple[str, ...] = ("eq",)
 FieldDescription = dict[str, Any]
 
 
-def _unwrap_optional(annotation: Any) -> tuple[Any, bool]:
+def unwrap_optional(annotation: Any) -> tuple[Any, bool]:
     """If ``annotation`` is ``Optional[T]`` / ``T | None`` return ``(T, True)``."""
     origin = get_origin(annotation)
     if origin in (Union, UnionType):
@@ -55,7 +57,7 @@ def infer_operators(annotation: Any) -> list[str]:
     Follows ``docs/filters.md §Operator Inference``. Unknown types fall back
     to ``["eq"]`` — the only operator guaranteed to be universally defined.
     """
-    inner, nullable = _unwrap_optional(annotation)
+    inner, nullable = unwrap_optional(annotation)
     operators = list(_operators_for_non_optional(inner))
     if nullable and "is_null" not in operators:
         operators.append("is_null")
@@ -100,9 +102,9 @@ def is_filterable(field_info: FieldInfo) -> bool:
     return bool(meta.get("filterable", True))
 
 
-def _type_label(annotation: Any) -> tuple[str, dict[str, Any]]:
+def type_label(annotation: Any) -> tuple[str, dict[str, Any]]:
     """Return ``(type_label, extras)`` for the discovery payload."""
-    inner, _nullable = _unwrap_optional(annotation)
+    inner, _nullable = unwrap_optional(annotation)
     if inner is bool:
         return "bool", {}
     if inner is str:
@@ -122,7 +124,7 @@ def _type_label(annotation: Any) -> tuple[str, dict[str, Any]]:
     if origin in (list, tuple, set, frozenset):
         args = get_args(inner)
         if args:
-            item_label, _ = _type_label(args[0])
+            item_label, _ = type_label(args[0])
             return "list", {"item_type": item_label}
         return "list", {}
 
@@ -138,8 +140,8 @@ def describe_field(name: str, field_info: FieldInfo) -> FieldDescription | None:
         return None
 
     annotation = field_info.annotation
-    _, nullable = _unwrap_optional(annotation)
-    type_label, extras = _type_label(annotation)
+    _, nullable = unwrap_optional(annotation)
+    label, extras = type_label(annotation)
 
     override = field_metadata(field_info).get("operators")
     if isinstance(override, (list, tuple)):
@@ -148,7 +150,7 @@ def describe_field(name: str, field_info: FieldInfo) -> FieldDescription | None:
     else:
         operators = infer_operators(annotation)
 
-    record: FieldDescription = {"name": name, "type": type_label}
+    record: FieldDescription = {"name": name, "type": label}
     record.update(extras)
     if nullable:
         record["nullable"] = True

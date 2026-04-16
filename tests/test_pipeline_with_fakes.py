@@ -123,21 +123,24 @@ def test_reject_exception_skips_store_writes():
     assert store.vector.search([1.0, 0.0, 0.0, 0.0], top_k=5) == []
 
 
+class ChildDetail(BaseStructure):
+    """Extract child detail."""
+
+    detail: str
+
+
 class ParentMeta(BaseStructure):
     """Extract parent metadata."""
 
     needs_child: bool
 
+    class Schema:
+        extensions = [ChildDetail]
+
     def extend(self) -> list[type[BaseStructure] | type[BaseSemantic]]:
         if self.needs_child:
             return [ChildDetail]
         return []
-
-
-class ChildDetail(BaseStructure):
-    """Extract child detail."""
-
-    detail: str
 
 
 def test_extend_queues_child_schema_at_runtime():

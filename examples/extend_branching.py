@@ -21,23 +21,26 @@ from ennoia.adapters.llm.ollama import OllamaAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
+class WashingtonAppellateDetail(BaseStructure):
+    """Extract the division number of the Washington appellate court."""
+
+    division: Literal["I", "II", "III"]
+
+
 class CaseMeta(BaseStructure):
     """Extract the jurisdiction and decision date from a case ruling."""
 
     jurisdiction: Literal["WA", "NY", "TX", "CA"]
     date_decided: date
 
+    class Schema:
+        extensions = [WashingtonAppellateDetail]
+
     def extend(self) -> list[type[BaseStructure] | type[BaseSemantic]]:
         confidence = float(getattr(self, "_confidence", 0.0))
         if self.jurisdiction == "WA" and confidence >= 0.8:
             return [WashingtonAppellateDetail]
         return []
-
-
-class WashingtonAppellateDetail(BaseStructure):
-    """Extract the division number of the Washington appellate court."""
-
-    division: Literal["I", "II", "III"]
 
 
 def main() -> None:

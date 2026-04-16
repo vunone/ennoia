@@ -68,6 +68,110 @@ parallel. The parent's extracted values are injected as `Additional
 Context` in the child's prompt, so the LLM can reason about the parent
 output when filling in the child.
 
+## Extension manifest
+
+Every class `extend()` may return must be declared up front in
+`Schema.extensions` on the emitting schema. This lets Ennoia compute the
+full field space (the *superschema*) at pipeline initialization, validate
+schema composition before any document is indexed, and reject runtime
+emissions that were not declared.
+
+```python
+class CaseDocument(BaseStructure):
+    """Extract case metadata."""
+
+    jurisdiction: Literal["WA", "NY", "TX"]
+
+    class Schema:
+        extensions = [WashingtonDetails, NewYorkDetails, TexasDetails]
+
+    def extend(self):
+        if self.jurisdiction == "WA":
+            return [WashingtonDetails]
+        if self.jurisdiction == "NY":
+            return [NewYorkDetails]
+        return [TexasDetails]
+```
+
+`Schema` is a plain inner class — no base to extend, no decorator. Both
+attributes are optional:
+
+- `extensions: list[type]` — default `[]`. Must list every class
+  `extend()` may return, structural or semantic. Undeclared returns raise
+  `SchemaError` at index time.
+- `namespace: str | None` — default `None` (flat merge). See below.
+
+Multi-level manifests are fine: an extension may itself declare
+`extensions`, producing a tree the framework traverses transitively.
+
+## Field merging
+
+When the manifest is resolved, every reachable structural schema
+contributes its fields to the superschema. There are three cases:
+
+**Flat merge (default).** Fields from every contributing schema appear
+at the top level. This is the common case for contextual extensions —
+children add fields that semantically belong to the parent document.
+
+**Multi-source flat fields.** When the same field name appears on more
+than one schema with compatible types, it merges into a single superschema
+entry whose `sources` list records every contributing class. Used when
+multiple extraction strategies target the same underlying concept (e.g.,
+citation formats that vary by case era).
+
+```python
+class OldCaseFormat(BaseStructure):
+    """Historic case format."""
+    citation: Literal["federal", "state"] = "federal"
+
+class NewCaseFormat(BaseStructure):
+    """Modern case format."""
+    citation: Literal["state", "international"] = "state"
+```
+
+The merged `citation` field becomes `Literal["federal", "state", "international"]`.
+
+**Namespaced merge.** When `Schema.namespace = "ns"`, the schema's own
+fields are prefixed with `ns__` in the superschema. Namespaces are an
+escape hatch — use them when fields would otherwise collide, when
+provenance matters, or when multiple instances of the same schema might
+be present.
+
+```python
+class WashingtonDetails(BaseStructure):
+    """Washington-specific fields."""
+    court_type: Literal["appellate", "supreme", "district"]
+
+    class Schema:
+        namespace = "wa"
+```
+
+In the superschema, this becomes `wa__court_type`. Namespaces apply only
+to their declaring class's own fields — they do **not** propagate into
+descendants reachable via that schema's `extensions`.
+
+The delimiter `__` is reserved and may not appear inside a namespace; a
+namespace must also be a valid Python identifier and must not match any
+reserved filter-operator name (`eq`, `in`, `gt`, …). Field names
+themselves must not match reserved operators either — Ennoia rejects
+such schemas at pipeline init with a clear `SchemaError`.
+
+## Type compatibility
+
+When a field is declared by more than one schema under flat merge, its
+types are merged per these rules:
+
+- Identical types merge to themselves.
+- `Literal[...]` ∪ `Literal[...]` merges to the union of values.
+- `Optional[T]` + `T` merges to `Optional[T]`.
+- `list[T]` + `list[U]` merges to `list[merge(T, U)]` recursively.
+
+Any other pairing is incompatible and raises `SchemaError` at pipeline
+init, identifying both source classes and both types. When descriptions
+differ across sources, Ennoia uses the first-declared description and
+emits a non-fatal `SchemaWarning`; the `has_divergent_descriptions` flag
+on the discovery payload alerts downstream agents.
+
 ## Field overrides
 
 Operators for a specific field can be restricted or the field itself

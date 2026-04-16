@@ -52,6 +52,19 @@ class CaseDocument(BaseStructure):
 The pipeline builds layers dynamically and runs each layer with
 `asyncio.gather`, so sibling branches within a layer extract concurrently.
 
+## Superschema
+
+Every class `extend()` can return must be listed in `Schema.extensions`
+on the emitting schema. At pipeline initialization, Ennoia walks this
+declaration transitively and collapses the fields from every reachable
+structural schema into a single unified field space called the
+**superschema**. Filters, discovery output, and the structured store all
+read from this one source of truth, so an agent never has to reason
+about which `extend()` branch fired — every possible field is known
+ahead of time, merged, and namespaced consistently. See
+[schemas.md](schemas.md) for the merging rules and
+[filters.md](filters.md) for the discovery payload shape.
+
 ## Confidence
 
 Confidence is not a declared field on `BaseStructure`. If it were, it would
