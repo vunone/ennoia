@@ -20,8 +20,8 @@ from ennoia.schema.merging import Superschema, build_superschema
 from ennoia.utils.ids import extract_source_id, make_semantic_vector_id
 
 if TYPE_CHECKING:
-    from ennoia.adapters.embedding.protocols import EmbeddingAdapter
-    from ennoia.adapters.llm.protocols import LLMAdapter
+    from ennoia.adapters.embedding.base import EmbeddingAdapter
+    from ennoia.adapters.llm.base import LLMAdapter
     from ennoia.store.base import HybridStore
     from ennoia.store.composite import Store
 
@@ -38,6 +38,7 @@ class Pipeline:
         llm: LLMAdapter,
         embedding: EmbeddingAdapter,
         events: Emitter | None = None,
+        concurrency: int | None = None,
     ) -> None:
         schemas = list(schemas or [])
         semantics = list(semantics or [])
@@ -65,6 +66,20 @@ class Pipeline:
         self.llm = llm
         self.embedding = embedding
         self.events = events or NullEmitter()
+        # ``concurrency`` is a hard cap on simultaneous LLM extractions and
+        # embedding calls. ``None`` means no cap (unbounded ``asyncio.gather``);
+        # ``1`` serialises every LLM/embedding call — the CLI's ``--no-threads``
+        # mode for resource-constrained local Ollama setups.
+        if concurrency is not None and concurrency < 1:
+            raise ValueError(f"concurrency must be >= 1 or None, got {concurrency}")
+        self._concurrency = concurrency
+
+    def _make_semaphore(self) -> asyncio.Semaphore | None:
+        # Semaphores bind to the running event loop, so we instantiate them
+        # inside the async methods rather than at __init__ time.
+        if self._concurrency is None:
+            return None
+        return asyncio.Semaphore(self._concurrency)
 
     def index(self, text: str, source_id: str) -> IndexResult:
         return asyncio.run(self.aindex(text=text, source_id=source_id))
@@ -79,12 +94,14 @@ class Pipeline:
 
     async def aindex(self, text: str, source_id: str) -> IndexResult:
         start = time.perf_counter()
+        sem = self._make_semaphore()
         try:
             batch = await execute_layers(
                 seed_structural=list(self._structural),
                 seed_semantic=list(self._semantics),
                 text=text,
                 llm=self.llm,
+                semaphore=sem,
             )
         except RejectException:
             rejected = IndexResult(source_id=source_id, rejected=True)
@@ -104,7 +121,7 @@ class Pipeline:
             semantic=batch.semantic,
             confidences=batch.confidences,
         )
-        self._persist(result)
+        await self._apersist(result, sem)
         self.events.emit(
             IndexEvent(
                 source_id=source_id,
@@ -123,8 +140,8 @@ class Pipeline:
     ) -> SearchResult:
         start = time.perf_counter()
         validate_filters(filters, self._superschema)
-        query_vector = self.embedding.embed_query(query)
-        raw_hits = plan_search(self.store, filters, query_vector, top_k)
+        query_vector = await self.embedding.embed_query(query)
+        raw_hits = await plan_search(self.store, filters, query_vector, top_k)
 
         from ennoia.store.composite import Store
 
@@ -141,7 +158,7 @@ class Pipeline:
 
             structural_record: dict[str, Any] = {}
             if structured_store is not None:
-                structural_record = structured_store.get(source_id) or {}
+                structural_record = await structured_store.get(source_id) or {}
 
             semantic_text = metadata.get("text", "")
             index_name = metadata.get("index", "")
@@ -163,7 +180,7 @@ class Pipeline:
         )
         return SearchResult(hits=hits_sorted)
 
-    def _persist(self, result: IndexResult) -> None:
+    async def _apersist(self, result: IndexResult, semaphore: asyncio.Semaphore | None) -> None:
         from ennoia.store.composite import Store
 
         if not isinstance(self.store, Store):
@@ -184,15 +201,21 @@ class Pipeline:
             if ns is not None:
                 dumped = {f"{ns}__{k}": v for k, v in dumped.items()}
             flat.update(dumped)
-        self.store.structured.upsert(result.source_id, flat)
+        await self.store.structured.upsert(result.source_id, flat)
 
-        for name, semantic_text in result.semantic.items():
-            if not semantic_text:
-                # Empty answer is a signal from the LLM, not an invitation to
-                # embed the full document; skip the upsert entirely.
-                continue
-            vector = self.embedding.embed_document(semantic_text)
-            self.store.vector.upsert(
+        # Empty semantic answers are a signal from the LLM, not an invitation
+        # to embed the full document; skip them so we don't pollute the index.
+        pending = [(name, text) for name, text in result.semantic.items() if text]
+        if not pending:
+            return
+
+        texts = [text for _, text in pending]
+        vectors = await self._embed_documents(texts, semaphore)
+        # Vector upserts run sequentially: every concrete VectorStore writes
+        # the same backing file/connection per call, so concurrent writes
+        # would race. Embedding is the slow step we parallelise above.
+        for (name, semantic_text), vector in zip(pending, vectors, strict=True):
+            await self.store.vector.upsert(
                 vector_id=make_semantic_vector_id(result.source_id, name),
                 vector=vector,
                 metadata={
@@ -201,3 +224,17 @@ class Pipeline:
                     "text": semantic_text,
                 },
             )
+
+    async def _embed_documents(
+        self, texts: list[str], semaphore: asyncio.Semaphore | None
+    ) -> list[list[float]]:
+        # ``embed_batch`` issues one round-trip for backends with native
+        # list-input APIs (OpenAI) or a single ``encode`` call for
+        # sentence-transformers; both honour the semaphore as a single unit
+        # of work. The semaphore primarily guards local-Ollama users — for
+        # them embedding usually runs on CPU and any concurrency would
+        # contend with the LLM thread.
+        if semaphore is None:
+            return await self.embedding.embed_batch(texts)
+        async with semaphore:
+            return await self.embedding.embed_batch(texts)

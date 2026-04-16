@@ -23,6 +23,8 @@ import pytest
 pytest.importorskip("numpy")
 
 from ennoia import BaseSemantic, BaseStructure, Pipeline, Store
+from ennoia.adapters.embedding import EmbeddingAdapter
+from ennoia.adapters.llm import LLMAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
@@ -37,7 +39,7 @@ class Summary(BaseSemantic):
     """What is the main topic?"""
 
 
-class LoopBoundFakeLLM:
+class LoopBoundFakeLLM(LLMAdapter):
     """Emulates an adapter with a resource that requires the current loop.
 
     Each invocation checks that it is running on an *open* event loop and
@@ -79,11 +81,8 @@ class LoopBoundFakeLLM:
         return "topic"
 
 
-class FakeEmbedding:
-    def embed_document(self, text: str) -> list[float]:
-        return [1.0, 0.0]
-
-    def embed_query(self, text: str) -> list[float]:
+class FakeEmbedding(EmbeddingAdapter):
+    async def embed(self, text: str) -> list[float]:
         return [1.0, 0.0]
 
 

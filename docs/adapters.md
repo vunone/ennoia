@@ -1,15 +1,23 @@
 # Adapters
 
 Adapters are stateless transformers that sit between the pipeline and an
-external service (LLM inference, embeddings). They conform to two
-protocols:
+external service (LLM inference, embeddings). Every adapter inherits from
+one of two abstract base classes:
 
 - `LLMAdapter` — `async complete_json(prompt)` and `async complete_text(prompt)`.
-- `EmbeddingAdapter` — synchronous `embed_document(text)` / `embed_query(text)`.
+- `EmbeddingAdapter` — `async embed(text)`; the ABC provides concrete
+  `embed_document(text)` / `embed_query(text)` (both delegate to `embed`)
+  and `embed_batch(texts)` (parallel-gather fallback that backends with a
+  native list-input API can override for a single round-trip).
 
-Protocols live in `ennoia/adapters/{llm,embedding}/protocols.py` and are
-`@runtime_checkable`, so custom adapters can duck-type in without
-inheritance.
+ABCs live in `ennoia/adapters/{llm,embedding}/base.py`. Inheritance (not
+structural typing) is used so that partial implementations fail loudly with
+`TypeError` at instantiation, matching the contract convention in
+[stores.md](stores.md).
+
+All adapter I/O is async. Sync libraries (sentence-transformers,
+transformers' `encode`) are dispatched via `asyncio.to_thread` so the event
+loop stays responsive while CPU-bound model work runs.
 
 ## Built-in LLM adapters
 
@@ -24,20 +32,30 @@ event-loop bound, and the pipeline re-enters `asyncio.run()` from each
 sync `index()` / `search()`, so caching an `AsyncClient` across calls
 surfaces "Event loop is closed" in some Python runtimes.
 
+`OpenAIAdapter` and `OllamaAdapter` share a `parse_json_object(content, source)`
+helper colocated with the `LLMAdapter` ABC. Anthropic's tool-use parse is
+backend-specific and stays in the adapter.
+
 ## Built-in embedding adapters
 
 | Adapter | Extra | Notes |
 |---|---|---|
-| `SentenceTransformerEmbedding` | `sentence-transformers` | Lazy-loads the model on first call. |
-| `OpenAIEmbedding` | `openai` | Synchronous SDK client; `OPENAI_API_KEY` fallback. |
+| `SentenceTransformerEmbedding` | `sentence-transformers` | Lazy-loads the model on first call; `encode` runs in `asyncio.to_thread`. `embed_batch` forwards the full list to a single `encode` call. |
+| `OpenAIEmbedding` | `openai` | `AsyncOpenAI` client, fresh per call. `embed_batch` issues one `embeddings.create(input=[...])` round-trip for all texts. |
+
+The pipeline uses `embed_batch` whenever a document has multiple semantic
+fields, so multi-semantic schemas only pay one network round-trip per
+document with `OpenAIEmbedding`.
 
 ## Custom adapters
 
-Implement the protocol and pass the instance into `Pipeline(...)`. No
-inheritance required.
+Inherit the ABC, implement the abstract method(s), pass the instance into
+`Pipeline(...)`:
 
 ```python
-class VllmAdapter:
+from ennoia.adapters.llm import LLMAdapter
+
+class VllmAdapter(LLMAdapter):
     async def complete_json(self, prompt: str) -> dict[str, object]:
         # call your vLLM server, parse JSON
         ...
@@ -46,8 +64,25 @@ class VllmAdapter:
         ...
 ```
 
-The same pattern applies to custom embedding adapters (e.g. a fine-tuned
-local encoder) and to custom stores (see [stores.md](stores.md)).
+For embeddings, override `embed` only — `embed_document`, `embed_query`,
+and `embed_batch` are inherited and route through `embed`:
+
+```python
+from ennoia.adapters.embedding import EmbeddingAdapter
+
+class MyEmbedding(EmbeddingAdapter):
+    async def embed(self, text: str) -> list[float]:
+        ...
+```
+
+If a backend needs asymmetric doc/query flows (e.g. Voyage's `input_type`),
+override `embed_document` and `embed_query` directly — the ABC methods are
+not `@final`. Backends with a native list-input API should also override
+`embed_batch` for the single-round-trip win.
+
+For sync libraries, dispatch the blocking call via `asyncio.to_thread`
+inside `embed` (and `embed_batch` if the library accepts a list) — the
+sentence-transformers adapter is the canonical example.
 
 ## Optional-dependency loading
 

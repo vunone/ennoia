@@ -316,3 +316,13 @@ def test_mixed_roots_structurals_and_semantics() -> None:
     manifest = build_manifest([StructRoot, SemRoot])
     assert len(manifest.structurals()) == 1
     assert len(manifest.semantics()) == 1
+
+
+def test_non_schema_root_raises() -> None:
+    # Passing a class that inherits from neither base directly as a root
+    # trips the root-validation branch in ``build_manifest``.
+    class NotASchema:
+        pass
+
+    with pytest.raises(SchemaError, match="not a BaseStructure or BaseSemantic subclass"):
+        build_manifest([NotASchema])  # type: ignore[list-item]

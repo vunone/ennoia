@@ -9,6 +9,8 @@ import pytest
 pytest.importorskip("numpy")
 
 from ennoia import BaseStructure, Emitter, IndexEvent, Pipeline, SearchEvent, Store
+from ennoia.adapters.embedding import EmbeddingAdapter
+from ennoia.adapters.llm import LLMAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
@@ -18,7 +20,7 @@ class Doc(BaseStructure):
     value: str
 
 
-class FakeLLM:
+class FakeLLM(LLMAdapter):
     async def complete_json(self, prompt: str) -> dict[str, Any]:
         return {"value": "x", "_confidence": 0.9}
 
@@ -26,11 +28,8 @@ class FakeLLM:
         return ""
 
 
-class FakeEmbedding:
-    def embed_document(self, text: str) -> list[float]:
-        return [1.0, 0.0]
-
-    def embed_query(self, text: str) -> list[float]:
+class FakeEmbedding(EmbeddingAdapter):
+    async def embed(self, text: str) -> list[float]:
         return [1.0, 0.0]
 
 

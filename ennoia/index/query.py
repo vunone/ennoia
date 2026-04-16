@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 __all__ = ["plan_search"]
 
 
-def plan_search(
+async def plan_search(
     store: Store | HybridStore,
     filters: dict[str, Any] | None,
     query_vector: list[float],
@@ -29,10 +29,10 @@ def plan_search(
     filters = filters or {}
 
     if isinstance(store, Store):
-        candidate_ids = store.structured.filter(filters)
+        candidate_ids = await store.structured.filter(filters)
         if not candidate_ids:
             return []
-        return store.vector.search(query_vector, top_k=top_k, restrict_to=candidate_ids)
+        return await store.vector.search(query_vector, top_k=top_k, restrict_to=candidate_ids)
 
     # HybridStore path — exists for symmetry; no Stage 1 implementations.
-    return store.hybrid_search(filters=filters, query_vector=query_vector, top_k=top_k)
+    return await store.hybrid_search(filters=filters, query_vector=query_vector, top_k=top_k)

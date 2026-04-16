@@ -14,12 +14,12 @@ class InMemoryStructuredStore(StructuredStore):
     def __init__(self) -> None:
         self._records: dict[str, dict[str, Any]] = {}
 
-    def upsert(self, source_id: str, data: dict[str, Any]) -> None:
+    async def upsert(self, source_id: str, data: dict[str, Any]) -> None:
         self._records[source_id] = dict(data)
 
-    def filter(self, query: dict[str, Any]) -> list[str]:
+    async def filter(self, query: dict[str, Any]) -> list[str]:
         return apply_filters(self._records.items(), query)
 
-    def get(self, source_id: str) -> dict[str, Any] | None:
+    async def get(self, source_id: str) -> dict[str, Any] | None:
         record = self._records.get(source_id)
         return dict(record) if record is not None else None

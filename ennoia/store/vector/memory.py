@@ -14,7 +14,7 @@ class InMemoryVectorStore(VectorStore):
     def __init__(self) -> None:
         self._entries: dict[str, tuple[list[float], dict[str, Any]]] = {}
 
-    def upsert(
+    async def upsert(
         self,
         vector_id: str,
         vector: list[float],
@@ -22,7 +22,7 @@ class InMemoryVectorStore(VectorStore):
     ) -> None:
         self._entries[vector_id] = (list(vector), dict(metadata))
 
-    def search(
+    async def search(
         self,
         query_vector: list[float],
         top_k: int,

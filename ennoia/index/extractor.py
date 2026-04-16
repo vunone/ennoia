@@ -29,7 +29,7 @@ from ennoia.index.exceptions import ExtractionError
 from ennoia.schema.base import BaseSemantic, BaseStructure
 
 if TYPE_CHECKING:
-    from ennoia.adapters.llm.protocols import LLMAdapter
+    from ennoia.adapters.llm.base import LLMAdapter
 
 __all__ = [
     "CONFIDENCE_KEY",
@@ -205,10 +205,9 @@ async def extract_semantic(
 
     match = _SEMANTIC_CONFIDENCE_RE.search(response)
     if match:
-        try:
-            confidence = max(0.0, min(1.0, float(match.group(1))))
-        except ValueError:
-            confidence = 1.0
+        # Regex guarantees ``match.group(1)`` is a well-formed decimal literal,
+        # so ``float`` never raises here.
+        confidence = max(0.0, min(1.0, float(match.group(1))))
         response = response[: match.start()].rstrip()
     else:
         confidence = 1.0

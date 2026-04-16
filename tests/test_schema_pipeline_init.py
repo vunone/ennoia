@@ -12,19 +12,18 @@ pytest.importorskip("numpy")
 from pydantic import Field as PydField
 
 from ennoia import BaseSemantic, BaseStructure, Pipeline, Store
+from ennoia.adapters.embedding import EmbeddingAdapter
+from ennoia.adapters.llm import LLMAdapter
 from ennoia.index.exceptions import SchemaError, SchemaWarning
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
-class _FakeEmbedding:
-    def embed_document(self, text: str) -> list[float]:
-        return [1.0, 0.0]
-
-    def embed_query(self, text: str) -> list[float]:
+class _FakeEmbedding(EmbeddingAdapter):
+    async def embed(self, text: str) -> list[float]:
         return [1.0, 0.0]
 
 
-class _RecordingLLM:
+class _RecordingLLM(LLMAdapter):
     def __init__(self, json_responses: dict[str, dict[str, Any]]) -> None:
         self._json_responses = json_responses
 
@@ -239,6 +238,8 @@ class _BranchRoot(BaseStructure):
 
 
 def test_persist_null_fills_inactive_branches() -> None:
+    import asyncio
+
     pipeline = Pipeline(
         schemas=[_BranchRoot],
         store=_store(),
@@ -251,7 +252,7 @@ def test_persist_null_fills_inactive_branches() -> None:
         embedding=_FakeEmbedding(),
     )
     pipeline.index(text="x", source_id="only-a")
-    stored = pipeline.store.structured.get("only-a")
+    stored = asyncio.run(pipeline.store.structured.get("only-a"))
     assert stored is not None
     assert stored["pick_a"] is True
     assert stored["a_value"] == "AA"
@@ -286,6 +287,8 @@ class _NsRoot(BaseStructure):
 
 
 def test_persist_namespaced_fields_written_with_prefix() -> None:
+    import asyncio
+
     pipeline = Pipeline(
         schemas=[_NsRoot],
         store=_store(),
@@ -298,7 +301,7 @@ def test_persist_namespaced_fields_written_with_prefix() -> None:
         embedding=_FakeEmbedding(),
     )
     pipeline.index(text="x", source_id="wa-1")
-    stored = pipeline.store.structured.get("wa-1")
+    stored = asyncio.run(pipeline.store.structured.get("wa-1"))
     assert stored is not None
     assert stored["jurisdiction"] == "WA"
     # Namespaced key, not flat.

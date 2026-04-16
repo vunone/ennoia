@@ -7,24 +7,35 @@ keeps the common path efficient without sacrificing correctness for the
 harder operators — a conscious v0.1.0 trade-off; a fully pushed-down
 implementation is tracked for a later iteration.
 
-Depends only on stdlib ``sqlite3``; no optional extra is required.
+Uses :mod:`aiosqlite` so calls don't block the event loop. ``aiosqlite``
+runs the underlying ``sqlite3`` connection on a dedicated background thread
+and exposes async ``execute`` / ``commit`` — the connection itself is bound
+to the asyncio loop that opened it via the ``run_coroutine_threadsafe``
+calls inside the library. The sync ``Pipeline.index`` / ``Pipeline.search``
+wrappers create a fresh loop on every call (``asyncio.run``), so we cannot
+cache a connection across loops; ``_get_conn`` lazily reopens whenever the
+running loop differs from the one that owns the cached connection. The same
+invariant governs every async adapter in this package — see
+:class:`ennoia.adapters.llm.ollama.OllamaAdapter`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-import sqlite3
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ennoia.store.base import StructuredStore
 from ennoia.utils.filters import (
-    KNOWN_OPERATORS,
     apply_filters,
     coerce_filter_value,
     parse_bool,
     split_filter_key,
 )
+
+if TYPE_CHECKING:
+    import aiosqlite
 
 __all__ = ["SQLiteStructuredStore"]
 
@@ -48,8 +59,21 @@ class SQLiteStructuredStore(StructuredStore):
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self._conn = sqlite3.connect(self.path)
-        self._conn.execute(
+        self._conn: aiosqlite.Connection | None = None
+        self._conn_loop: asyncio.AbstractEventLoop | None = None
+
+    async def _get_conn(self) -> aiosqlite.Connection:
+        import aiosqlite
+
+        current = asyncio.get_running_loop()
+        if self._conn is not None and self._conn_loop is current:
+            return self._conn
+        # Different loop (or first use): open a fresh connection bound to it.
+        # The previous connection (if any) is leaked rather than awaited-closed
+        # because its loop is already gone — closing would raise.
+        self._conn = await aiosqlite.connect(self.path)
+        self._conn_loop = current
+        await self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS documents (
                 source_id TEXT PRIMARY KEY,
@@ -57,51 +81,54 @@ class SQLiteStructuredStore(StructuredStore):
             )
             """
         )
-        self._conn.commit()
+        await self._conn.commit()
+        return self._conn
 
-    def close(self) -> None:
-        self._conn.close()
+    async def close(self) -> None:
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
+            self._conn_loop = None
 
-    def upsert(self, source_id: str, data: dict[str, Any]) -> None:
+    async def upsert(self, source_id: str, data: dict[str, Any]) -> None:
+        conn = await self._get_conn()
         payload = json.dumps(data, default=str)
-        self._conn.execute(
+        await conn.execute(
             """
             INSERT INTO documents(source_id, data) VALUES (?, ?)
             ON CONFLICT(source_id) DO UPDATE SET data = excluded.data
             """,
             (source_id, payload),
         )
-        self._conn.commit()
+        await conn.commit()
 
-    def get(self, source_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
+    async def get(self, source_id: str) -> dict[str, Any] | None:
+        conn = await self._get_conn()
+        async with conn.execute(
             "SELECT data FROM documents WHERE source_id = ?",
             (source_id,),
-        ).fetchone()
+        ) as cursor:
+            row = await cursor.fetchone()
         if row is None:
             return None
         return dict(json.loads(row[0]))
 
-    def filter(self, query: dict[str, Any]) -> list[str]:
+    async def filter(self, query: dict[str, Any]) -> list[str]:
+        conn = await self._get_conn()
         if not query:
-            return [row[0] for row in self._conn.execute("SELECT source_id FROM documents")]
+            async with conn.execute("SELECT source_id FROM documents") as cursor:
+                return [row[0] async for row in cursor]
 
         sql_conditions: list[tuple[str, list[Any]]] = []
         python_conditions: dict[str, Any] = {}
 
         for key, value in query.items():
             field, op = split_filter_key(key)
-            if op not in KNOWN_OPERATORS:
-                raise ValueError(f"Unknown filter operator: {op}")
             if op not in _SCALAR_OPS:
                 python_conditions[key] = value
                 continue
 
-            condition = _compile_scalar(field, op, value)
-            if condition is None:
-                python_conditions[key] = value
-            else:
-                sql_conditions.append(condition)
+            sql_conditions.append(_compile_scalar(field, op, value))
 
         if sql_conditions:
             where = " AND ".join(clause for clause, _ in sql_conditions)
@@ -111,7 +138,8 @@ class SQLiteStructuredStore(StructuredStore):
             sql = "SELECT source_id, data FROM documents"
             params = []
 
-        rows = list(self._conn.execute(sql, params))
+        async with conn.execute(sql, params) as cursor:
+            rows = [row async for row in cursor]
         if not python_conditions:
             return [row[0] for row in rows]
 
@@ -119,12 +147,12 @@ class SQLiteStructuredStore(StructuredStore):
         return apply_filters(decoded, python_conditions)
 
 
-def _compile_scalar(field: str, op: str, value: Any) -> tuple[str, list[Any]] | None:
+def _compile_scalar(field: str, op: str, value: Any) -> tuple[str, list[Any]]:
     """Compile a scalar condition to a SQL fragment + parameter list.
 
-    Returns ``None`` when the condition is better handled in Python (e.g. a
-    date-typed value that needs to be compared as a string lexicographically —
-    :func:`coerce_filter_value` does that in-memory).
+    Caller restricts ``op`` to :data:`_SCALAR_OPS`, so every branch below is
+    exhaustive — every scalar operator maps to either ``is_null``, ``in``, or a
+    comparator in :data:`_SQL_COMPARATOR`.
     """
     json_path = f"json_extract(data, '$.{field}')"
 
@@ -146,9 +174,7 @@ def _compile_scalar(field: str, op: str, value: Any) -> tuple[str, list[Any]] | 
         placeholders = ",".join("?" * len(candidates))
         return (f"{json_path} IN ({placeholders})", candidates)
 
-    comparator = _SQL_COMPARATOR.get(op)
-    if comparator is None:
-        return None
+    comparator = _SQL_COMPARATOR[op]
 
     # SQLite's json_extract returns JSON-typed primitives; string/number
     # comparisons work natively. Dates arrive as ISO strings on both sides

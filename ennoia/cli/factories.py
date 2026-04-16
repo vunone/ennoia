@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING
 import typer
 
 if TYPE_CHECKING:
-    from ennoia.adapters.embedding.protocols import EmbeddingAdapter
-    from ennoia.adapters.llm.protocols import LLMAdapter
+    from ennoia.adapters.embedding.base import EmbeddingAdapter
+    from ennoia.adapters.llm.base import LLMAdapter
 
 __all__ = ["parse_embedding_spec", "parse_llm_spec"]
 

@@ -15,18 +15,27 @@ Layers are built dynamically from the runtime DAG:
 
 De-duplication is schema-class-based so a schema queued twice (by two parent
 branches) runs once.
+
+A ``semaphore`` argument caps how many extractions are in flight at once;
+``None`` means no cap. Pipeline injects the cap from its ``concurrency``
+constructor argument so CLI users running local Ollama can serialise calls
+via ``--no-threads``.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, TypeVar
 
 from ennoia.index.exceptions import SchemaError
 from ennoia.index.extractor import CONFIDENCE_KEY, extract_semantic, extract_structural
 from ennoia.schema.base import BaseSemantic, BaseStructure, get_schema_extensions
 
 if TYPE_CHECKING:
-    from ennoia.adapters.llm.protocols import LLMAdapter
+    from ennoia.adapters.llm.base import LLMAdapter
+
+_T = TypeVar("_T")
 
 __all__ = ["ExtractionBatch", "execute_layers"]
 
@@ -61,10 +70,9 @@ async def execute_layers(
     seed_semantic: list[type[BaseSemantic]],
     text: str,
     llm: LLMAdapter,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> ExtractionBatch:
     """Run seeds through the layer-wise parallel DAG and return accumulated results."""
-    import asyncio
-
     batch = ExtractionBatch()
 
     seen_structural: set[type[BaseStructure]] = set()
@@ -89,21 +97,22 @@ async def execute_layers(
                 continue
             seen_structural.add(schema)
             layer.append((schema, parent))
-        # ``next_layer_candidates`` receives new work from this layer's extend() calls.
-        pending_structural = next_layer_candidates
-
-        if not layer:
-            continue
+        # ``next_layer_candidates`` receives new work from this layer's extend()
+        # calls; it's repopulated before being assigned to ``pending_structural``
+        # for the next iteration.
 
         async def _run(
             schema: type[BaseStructure], parent: BaseStructure | None
         ) -> tuple[type[BaseStructure], BaseStructure, float]:
             context_additions = [_render_parent_context(parent)] if parent is not None else []
-            instance, confidence = await extract_structural(
-                schema=schema,
-                text=text,
-                context_additions=context_additions,
-                llm=llm,
+            instance, confidence = await _under_semaphore(
+                semaphore,
+                extract_structural(
+                    schema=schema,
+                    text=text,
+                    context_additions=context_additions,
+                    llm=llm,
+                ),
             )
             return schema, instance, confidence
 
@@ -126,8 +135,9 @@ async def execute_layers(
                         f"{sorted(c.__name__ for c in declared)}."
                     )
                 if issubclass(child, BaseSemantic):
-                    if child not in seen_semantic:
-                        semantic_queue.append((child, instance))
+                    # ``seen_semantic`` is empty during the structural phase;
+                    # dedup happens in the semantic loop below.
+                    semantic_queue.append((child, instance))
                 elif child not in seen_structural:
                     next_layer_candidates.append((child, instance))
 
@@ -140,7 +150,9 @@ async def execute_layers(
         ) -> tuple[type[BaseSemantic], str, float]:
             # Semantic prompts don't consume parent context today — text is primary.
             _ = parent
-            answer, confidence = await extract_semantic(schema=schema, text=text, llm=llm)
+            answer, confidence = await _under_semaphore(
+                semaphore, extract_semantic(schema=schema, text=text, llm=llm)
+            )
             return schema, answer, confidence
 
         filtered: list[tuple[type[BaseSemantic], BaseStructure | None]] = []
@@ -156,3 +168,16 @@ async def execute_layers(
             batch.confidences[schema.__name__] = confidence
 
     return batch
+
+
+async def _under_semaphore(semaphore: asyncio.Semaphore | None, coro: Awaitable[_T]) -> _T:
+    """Await ``coro`` while holding ``semaphore`` (if provided).
+
+    Centralised so the structural and semantic paths share the same cap.
+    With ``semaphore=None`` the call is a straight ``await`` — zero overhead
+    for the unbounded path.
+    """
+    if semaphore is None:
+        return await coro
+    async with semaphore:
+        return await coro

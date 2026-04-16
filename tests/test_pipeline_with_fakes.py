@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any, Literal
 
@@ -10,6 +11,8 @@ import pytest
 pytest.importorskip("numpy")
 
 from ennoia import BaseSemantic, BaseStructure, Pipeline, RejectException, Store
+from ennoia.adapters.embedding import EmbeddingAdapter
+from ennoia.adapters.llm import LLMAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
@@ -24,7 +27,7 @@ class Summary(BaseSemantic):
     """What is the main topic?"""
 
 
-class FakeLLM:
+class FakeLLM(LLMAdapter):
     def __init__(
         self,
         json_responses: dict[str, dict[str, Any]],
@@ -47,18 +50,12 @@ class FakeLLM:
         return self._text_default
 
 
-class FakeEmbedding:
+class FakeEmbedding(EmbeddingAdapter):
     """Deterministic embedding — rotates a simple 4-dim vector per call content."""
 
-    def _encode(self, text: str) -> list[float]:
+    async def embed(self, text: str) -> list[float]:
         seed = abs(hash(text)) % 1000 / 1000.0
         return [1.0, seed, 0.0, 0.0]
-
-    def embed_document(self, text: str) -> list[float]:
-        return self._encode(text)
-
-    def embed_query(self, text: str) -> list[float]:
-        return self._encode(text)
 
 
 def _store() -> Store:
@@ -119,8 +116,8 @@ def test_reject_exception_skips_store_writes():
 
     result = pipeline.index(text="Some medical text.", source_id="doc_reject")
     assert result.rejected is True
-    assert store.structured.get("doc_reject") is None
-    assert store.vector.search([1.0, 0.0, 0.0, 0.0], top_k=5) == []
+    assert asyncio.run(store.structured.get("doc_reject")) is None
+    assert asyncio.run(store.vector.search([1.0, 0.0, 0.0, 0.0], top_k=5)) == []
 
 
 class ChildDetail(BaseStructure):

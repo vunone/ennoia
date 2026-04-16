@@ -84,6 +84,16 @@ def test_merge_unparameterized_list_raises() -> None:
         merge_field_types(list, list[str])
 
 
+def test_merge_generic_alias_with_empty_args_raises() -> None:
+    # A ``types.GenericAlias(list, ())`` has origin ``list`` but no args, so the
+    # inner guard in the list-recursion branch fires.
+    import types
+
+    weird = types.GenericAlias(list, ())
+    with pytest.raises(SchemaError, match="unparameterized"):
+        merge_field_types(weird, list[str])
+
+
 # ---------------------------------------------------------------------------
 # build_superschema: end-to-end merging from a manifest
 # ---------------------------------------------------------------------------
@@ -290,3 +300,56 @@ def test_empty_manifest_produces_empty_superschema() -> None:
     assert ss.fields == {}
     assert ss.semantic_indices == []
     assert isinstance(ss, Superschema)
+
+
+# ---------------------------------------------------------------------------
+# Field(operators=...) override through single-source and merge paths
+# ---------------------------------------------------------------------------
+
+from typing import Annotated, Optional  # noqa: E402
+
+from ennoia.schema.fields import Field as EnnoiaField  # noqa: E402
+
+
+class _OverrideNullable(BaseStructure):
+    """Schema with a nullable field that overrides operators without is_null."""
+
+    label: Annotated[Optional[str], EnnoiaField(default=None, operators=["eq", "contains"])]
+
+
+def test_nullable_override_single_source_appends_is_null() -> None:
+    manifest = build_manifest([_OverrideNullable])
+    ss = build_superschema(manifest)
+    sf = ss.fields["label"]
+    # Explicit override respected + is_null appended because the field is nullable.
+    assert sf.operators == ["eq", "contains", "is_null"]
+
+
+class _OverrideA(BaseStructure):
+    """First source declares an explicit operators override."""
+
+    title: Annotated[Optional[str], EnnoiaField(default=None, operators=["eq", "contains"])]
+
+
+class _OverrideB(BaseStructure):
+    """Second source declares the same field with no override."""
+
+    title: Optional[str] = None
+
+
+class _OverrideMergeRoot(BaseStructure):
+    """Root pulling in overridden + non-overridden sources of the same field."""
+
+    root_label: str
+
+    class Schema:
+        extensions: ClassVar[list[type]] = [_OverrideA, _OverrideB]
+
+
+def test_override_preserved_across_merge_retains_is_null_for_nullable() -> None:
+    manifest = build_manifest([_OverrideMergeRoot])
+    ss = build_superschema(manifest)
+    sf = ss.fields["title"]
+    # The override from the first source wins; nullable → is_null appended.
+    assert sf.operators == ["eq", "contains", "is_null"]
+    assert sf.sources == ["_OverrideA", "_OverrideB"]

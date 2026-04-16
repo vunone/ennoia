@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
+from ennoia.adapters.llm.base import LLMAdapter
 from ennoia.index.exceptions import ExtractionError
 from ennoia.utils.imports import require_module
 
@@ -29,7 +30,7 @@ _EMIT_TOOL = {
 }
 
 
-class AnthropicAdapter:
+class AnthropicAdapter(LLMAdapter):
     def __init__(
         self,
         model: str,

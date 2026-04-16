@@ -10,6 +10,8 @@ import pytest
 pytest.importorskip("numpy")
 
 from ennoia import BaseStructure, Field, FilterValidationError, Pipeline, Store
+from ennoia.adapters.embedding import EmbeddingAdapter
+from ennoia.adapters.llm import LLMAdapter
 from ennoia.index.validation import validate_filters
 from ennoia.schema.manifest import build_manifest
 from ennoia.schema.merging import build_superschema
@@ -65,18 +67,15 @@ def test_empty_filters_is_noop() -> None:
 
 
 def test_pipeline_search_raises_validation_error() -> None:
-    class FakeLLM:
+    class FakeLLM(LLMAdapter):
         async def complete_json(self, prompt: str) -> dict[str, object]:
             return {}
 
         async def complete_text(self, prompt: str) -> str:
             return ""
 
-    class FakeEmbedding:
-        def embed_document(self, text: str) -> list[float]:
-            return [1.0]
-
-        def embed_query(self, text: str) -> list[float]:
+    class FakeEmbedding(EmbeddingAdapter):
+        async def embed(self, text: str) -> list[float]:
             return [1.0]
 
     pipeline = Pipeline(
