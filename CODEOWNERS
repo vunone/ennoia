@@ -1,0 +1,29 @@
+# CODEOWNERS — default reviewers for every change.
+#
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-configuration/about-code-owners
+# for syntax. Patterns are matched against file paths; the last matching
+# pattern wins, so more-specific rules appear below the fallback.
+
+* @vunone
+
+# Public API surface — breaking changes need extra scrutiny.
+/ennoia/__init__.py                  @vunone
+/ennoia/schema/                      @vunone
+/ennoia/index/pipeline.py            @vunone
+/ennoia/index/exceptions.py          @vunone
+/ennoia/store/base.py                @vunone
+
+# Server + CLI surfaces — user-facing wire protocol.
+/ennoia/server/                      @vunone
+/ennoia/cli/                         @vunone
+
+# Hybrid store adapters touch production infra integration.
+/ennoia/store/hybrid/                @vunone
+
+# CI, release, and governance.
+/.github/                            @vunone
+/pyproject.toml                      @vunone
+/CHANGELOG.md                        @vunone
+/SECURITY.md                         @vunone
+/CODE_OF_CONDUCT.md                  @vunone
+/CODEOWNERS                          @vunone

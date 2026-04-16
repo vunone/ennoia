@@ -1,8 +1,10 @@
 """Typer CLI entrypoint — ``ennoia try | index | search``.
 
-The commands mirror ``docs/cli.md``. Adapter selection uses the URI syntax
-implemented in :mod:`ennoia.cli.factories`; the store lives under
-``--store <path>`` and is always a :meth:`Store.from_path` filesystem store.
+The commands mirror ``docs/cli.md``. Adapter and store selection both use
+the URI prefix syntax from :mod:`ennoia.cli.factories`. ``--store`` takes
+a filesystem path (default), ``file:<path>``, ``qdrant:<collection>`` (with
+``--qdrant-url`` / ``--qdrant-api-key``), or ``pgvector:<collection>``
+(with ``--pg-dsn``).
 """
 
 from __future__ import annotations
@@ -17,12 +19,11 @@ from typing import Any
 
 import typer
 
-from ennoia.cli.factories import parse_embedding_spec, parse_llm_spec
+from ennoia.cli.factories import parse_embedding_spec, parse_llm_spec, parse_store_spec
 from ennoia.index.exceptions import FilterValidationError
 from ennoia.index.extractor import extract_semantic, extract_structural
 from ennoia.index.pipeline import Pipeline
 from ennoia.schema.base import BaseSemantic, BaseStructure
-from ennoia.store.composite import Store
 from ennoia.utils.filters import parse_bool, split_filter_key
 
 __all__ = ["app"]
@@ -35,7 +36,24 @@ app = typer.Typer(
 )
 
 
-def _load_schemas(path: Path) -> list[type[BaseStructure] | type[BaseSemantic]]:
+def _register_server_commands() -> None:
+    """Register the ``api`` and ``mcp`` subcommands.
+
+    Kept lazy so the ``ennoia try|index|search`` commands still work without
+    the ``[server]`` extra installed — importing those modules pulls in
+    FastAPI / FastMCP.
+    """
+    from ennoia.cli.api import api_command
+    from ennoia.cli.mcp import mcp_command
+
+    app.command("api")(api_command)
+    app.command("mcp")(mcp_command)
+
+
+_register_server_commands()
+
+
+def load_schemas(path: Path) -> list[type[BaseStructure] | type[BaseSemantic]]:
     """Load schema classes from a Python module file."""
     if not path.exists():
         raise typer.BadParameter(f"Schema file not found: {path}")
@@ -94,15 +112,14 @@ def try_command(
     document: Path = typer.Argument(..., help="Path to a document file."),
     schema: Path = typer.Option(..., "--schema", help="Python module declaring schemas."),
     llm: str = typer.Option("ollama:qwen3:0.6b", "--llm", help="LLM adapter URI."),
-    embedding: str = typer.Option(
-        "sentence-transformers:all-MiniLM-L6-v2",
-        "--embedding",
-        help="Embedding adapter URI (loaded but unused; kept for parity with index/search).",
-    ),
 ) -> None:
-    """Run a single extraction pass and print fields + confidences."""
-    _ = embedding  # Reserved for later — keeps the flag stable.
-    classes = _load_schemas(schema)
+    """Run a single extraction pass and print fields + confidences.
+
+    ``try`` is a schema / extraction debug tool — no embeddings, no store.
+    Use ``ennoia index`` / ``ennoia search`` when you want persistence and
+    semantic search.
+    """
+    classes = load_schemas(schema)
     text = _read_document(document)
     llm_adapter = parse_llm_spec(llm)
 
@@ -133,7 +150,32 @@ def try_command(
 def index_command(
     directory: Path = typer.Argument(..., help="Directory whose files should be indexed."),
     schema: Path = typer.Option(..., "--schema"),
-    store: Path = typer.Option(..., "--store", help="Filesystem store directory."),
+    store: str = typer.Option(
+        ...,
+        "--store",
+        help=(
+            "Store URI. Plain path / 'file:<path>' → filesystem. "
+            "'qdrant:<collection>' → Qdrant (needs --qdrant-url). "
+            "'pgvector:<collection>' → pgvector (needs --pg-dsn)."
+        ),
+    ),
+    collection: str = typer.Option(
+        "documents",
+        "--collection",
+        help=(
+            "Collection name for filesystem stores. "
+            "Ignored for qdrant/pgvector (collection is in --store)."
+        ),
+    ),
+    qdrant_url: str | None = typer.Option(
+        None, "--qdrant-url", envvar="ENNOIA_QDRANT_URL", help="Qdrant endpoint URL."
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="ENNOIA_QDRANT_API_KEY", help="Qdrant API key."
+    ),
+    pg_dsn: str | None = typer.Option(
+        None, "--pg-dsn", envvar="ENNOIA_PG_DSN", help="pgvector PostgreSQL DSN."
+    ),
     llm: str = typer.Option("ollama:qwen3:0.6b", "--llm"),
     embedding: str = typer.Option("sentence-transformers:all-MiniLM-L6-v2", "--embedding"),
     no_threads: bool = typer.Option(
@@ -149,10 +191,16 @@ def index_command(
     if not directory.is_dir():
         raise typer.BadParameter(f"Not a directory: {directory}")
 
-    classes = _load_schemas(schema)
+    classes = load_schemas(schema)
     pipeline = Pipeline(
         schemas=classes,
-        store=Store.from_path(store),
+        store=parse_store_spec(
+            store,
+            collection=collection,
+            qdrant_url=qdrant_url,
+            qdrant_api_key=qdrant_api_key,
+            pg_dsn=pg_dsn,
+        ),
         llm=parse_llm_spec(llm),
         embedding=parse_embedding_spec(embedding),
         concurrency=1 if no_threads else None,
@@ -173,7 +221,29 @@ def index_command(
 @app.command("search")
 def search_command(
     query: str = typer.Argument(..., help="Natural-language query."),
-    store: Path = typer.Option(..., "--store"),
+    store: str = typer.Option(
+        ...,
+        "--store",
+        help=(
+            "Store URI. Plain path / 'file:<path>' → filesystem. "
+            "'qdrant:<collection>' → Qdrant (needs --qdrant-url). "
+            "'pgvector:<collection>' → pgvector (needs --pg-dsn)."
+        ),
+    ),
+    collection: str = typer.Option(
+        "documents",
+        "--collection",
+        help="Collection name for filesystem stores. Ignored for qdrant/pgvector.",
+    ),
+    qdrant_url: str | None = typer.Option(
+        None, "--qdrant-url", envvar="ENNOIA_QDRANT_URL", help="Qdrant endpoint URL."
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="ENNOIA_QDRANT_API_KEY", help="Qdrant API key."
+    ),
+    pg_dsn: str | None = typer.Option(
+        None, "--pg-dsn", envvar="ENNOIA_PG_DSN", help="pgvector PostgreSQL DSN."
+    ),
     schema: Path | None = typer.Option(
         None,
         "--schema",
@@ -202,10 +272,16 @@ def search_command(
     """Search the filesystem store with optional structured filters."""
     filters = _parse_filters(filters_raw)
 
-    classes = _load_schemas(schema) if schema is not None else []
+    classes = load_schemas(schema) if schema is not None else []
     pipeline = Pipeline(
         schemas=classes,
-        store=Store.from_path(store),
+        store=parse_store_spec(
+            store,
+            collection=collection,
+            qdrant_url=qdrant_url,
+            qdrant_api_key=qdrant_api_key,
+            pg_dsn=pg_dsn,
+        ),
         llm=parse_llm_spec(llm),
         embedding=parse_embedding_spec(embedding),
         concurrency=1 if no_threads else None,

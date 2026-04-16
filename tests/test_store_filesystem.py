@@ -46,10 +46,29 @@ async def test_store_from_path_builds_both(tmp_path: Path) -> None:
     assert await store.structured.get("doc_1") == {"cat": "legal"}
     assert (await store.vector.search([1.0, 0.0], top_k=1))[0][0] == "doc_1:Summary"
 
-    # Files live in the expected subdirectories.
-    assert (tmp_path / "structured" / "structured.parquet").exists()
-    assert (tmp_path / "vectors" / "vectors.npy").exists()
-    assert (tmp_path / "vectors" / "ids.json").exists()
+    # Files live in <root>/<collection=documents>/... by default.
+    assert (tmp_path / "documents" / "structured" / "documents.parquet").exists()
+    assert (tmp_path / "documents" / "vectors" / "documents.npy").exists()
+    assert (tmp_path / "documents" / "vectors" / "documents_ids.json").exists()
+
+
+async def test_store_from_path_isolates_collections(tmp_path: Path) -> None:
+    # Two pipelines under one root must not see each other's documents.
+    invoices = Store.from_path(tmp_path, collection="invoices")
+    emails = Store.from_path(tmp_path, collection="emails")
+    await invoices.structured.upsert("doc_1", {"amount": 100})
+    await emails.structured.upsert("doc_1", {"subject": "hi"})
+    assert await invoices.structured.get("doc_1") == {"amount": 100}
+    assert await emails.structured.get("doc_1") == {"subject": "hi"}
+    # The collection segment does the isolation; the inner filenames use the
+    # underlying store's default basename (``documents.*``).
+    assert (tmp_path / "invoices" / "structured" / "documents.parquet").exists()
+    assert (tmp_path / "emails" / "structured" / "documents.parquet").exists()
+
+
+def test_store_from_path_rejects_invalid_collection(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="collection"):
+        Store.from_path(tmp_path, collection="bad name!")
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +79,7 @@ async def test_store_from_path_builds_both(tmp_path: Path) -> None:
 async def test_parquet_load_skips_empty_data_rows(tmp_path: Path) -> None:
     import pandas as pd
 
-    target = tmp_path / "structured.parquet"
+    target = tmp_path / "documents.parquet"
     # Manually write a parquet with one row whose ``__data__`` is empty; the
     # loader must skip it without failing the whole load.
     pd.DataFrame(
@@ -84,7 +103,7 @@ async def test_filesystem_vector_flush_with_no_entries_removes_vectors_npy(
 ) -> None:
     store = FilesystemVectorStore(tmp_path)
     await store.upsert("a", [1.0, 0.0], {"source_id": "a"})
-    vec_file = tmp_path / "vectors.npy"
+    vec_file = tmp_path / "documents.npy"
     assert vec_file.exists()
 
     # Bypass public API to drain entries; then _flush must unlink the .npy.
@@ -97,10 +116,10 @@ def test_filesystem_vector_flush_with_no_entries_noop_when_file_absent(
     tmp_path: Path,
 ) -> None:
     # Constructing an empty store and flushing shouldn't crash even though
-    # vectors.npy doesn't exist.
+    # the .npy doesn't exist.
     store = FilesystemVectorStore(tmp_path)
     store._flush()
-    assert not (tmp_path / "vectors.npy").exists()
+    assert not (tmp_path / "documents.npy").exists()
 
 
 # ---------------------------------------------------------------------------

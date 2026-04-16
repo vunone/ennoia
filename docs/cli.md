@@ -30,16 +30,21 @@ Schema: Holding
 ## `ennoia index` — index a folder
 
 Walks a directory and indexes each file through the pipeline. The
-`--store` flag builds a filesystem-backed store under the given path
-(Parquet for structured, NumPy for vectors).
+`--store` flag accepts a prefix-qualified spec — filesystem path by
+default, `qdrant:<collection>` or `pgvector:<collection>` when pointing
+at a production vector backend. See [Store backends](#store-backends) below.
 
 ```bash
 ennoia index ./docs \
   --schema my_schemas.py \
   --store ./my_index \
+  --collection invoices \
   --llm ollama:qwen3:0.6b \
   --embedding sentence-transformers:all-MiniLM-L6-v2
 ```
+
+Multiple pipelines can sit under one project root by passing different
+`--collection` values — each gets its own `<root>/<collection>/` subtree.
 
 By default, independent schemas in a layer extract in parallel via
 `asyncio.gather`. On a resource-constrained machine running local
@@ -72,6 +77,51 @@ operator exits with code `2` and an error JSON:
   "message": "Field 'jurisdiction' (type: enum) does not support operator 'gt'. Supported operators: eq, in."
 }
 ```
+
+## `ennoia api` — REST server
+
+Boot a FastAPI server against any supported store. Full CRUD surface —
+`/discover`, `/filter`, `/search`, `/retrieve`, `/index`, `/delete`.
+
+```bash
+ennoia api --store qdrant:cases \
+  --qdrant-url http://localhost:6333 \
+  --schema my_schemas.py \
+  --api-key "$ENNOIA_API_KEY"
+```
+
+Requires the `server` extra. See [Servers — REST + MCP](serve.md) for
+every flag, the endpoint table, and auth configuration.
+
+## `ennoia mcp` — MCP tool server
+
+Read-only agent surface — `discover_schema`, `filter`, `search`,
+`retrieve`. Supports `sse`, `stdio`, and `http` transports.
+
+```bash
+ennoia mcp --store qdrant:cases \
+  --qdrant-url http://localhost:6333 \
+  --schema my_schemas.py \
+  --transport sse \
+  --api-key "$ENNOIA_API_KEY"
+```
+
+Requires the `server` extra. See [Servers — REST + MCP](serve.md) and
+the [MCP agent cookbook](cookbook/mcp-agent.md).
+
+## Store backends
+
+`--store` accepts three forms across `index`, `search`, `api`, and `mcp`:
+
+| Form | Backend | Required extra flags |
+|---|---|---|
+| `<path>` or `file:<path>` | Filesystem (Parquet + NumPy) | `--collection` (default `documents`) |
+| `qdrant:<collection>` | `QdrantHybridStore` | `--qdrant-url` (or `ENNOIA_QDRANT_URL`); `--qdrant-api-key` / `ENNOIA_QDRANT_API_KEY` optional |
+| `pgvector:<collection>` | `PgVectorHybridStore` | `--pg-dsn` (or `ENNOIA_PG_DSN`) |
+
+Collection names must match `^[A-Za-z_][A-Za-z0-9_]*$` so the same name
+is valid as a subdirectory, SQLite table, Qdrant collection, and
+PostgreSQL table.
 
 ## Adapter URIs
 

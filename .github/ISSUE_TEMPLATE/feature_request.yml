@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a new feature or improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your idea. Please describe the *problem* you are trying
+        to solve before jumping to the solution — it makes it easier to
+        evaluate alternatives.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Why is this feature needed? What is the user journey that hits friction today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: A concrete description of the feature. API sketches welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What did you evaluate and reject, and why?
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this has not been requested.
+          required: true

@@ -28,8 +28,12 @@ pip install "ennoia[ollama,sentence-transformers,cli]"
 ```
 
 Available extras: `ollama`, `openai`, `anthropic`, `sentence-transformers`,
-`filesystem` (Parquet + NumPy stores), `cli` (`ennoia` CLI), `all`
-(everything above).
+`filesystem` (Parquet + NumPy stores), `cli` (`ennoia` CLI),
+`qdrant` (Qdrant vector + hybrid stores),
+`pgvector` (PostgreSQL + pgvector hybrid store),
+`server` (FastAPI REST + FastMCP),
+`docs` (mkdocs-material site),
+`all` (everything above).
 
 ## Quick start (SDK)
 
@@ -94,19 +98,49 @@ ennoia try ./sample.txt --schema my_schemas.py
 ennoia index ./docs \
   --schema my_schemas.py \
   --store ./my_index \
+  --collection cases \
   --llm ollama:qwen3:0.6b \
   --embedding sentence-transformers:all-MiniLM-L6-v2
+
+# …or into a production Qdrant / pgvector backend
+ennoia index ./docs \
+  --schema my_schemas.py \
+  --store qdrant:cases \
+  --qdrant-url http://localhost:6333 \
+  --llm openai:gpt-4o-mini \
+  --embedding openai-embedding:text-embedding-3-small
 
 # Hybrid search
 ennoia search "employer duty to accommodate disability" \
   --schema my_schemas.py \
   --store ./my_index \
+  --collection cases \
   --filter "jurisdiction=WA" \
   --filter "date_decided__gte=2020-01-01" \
   --top-k 5
 ```
 
 See [docs/cli.md](https://github.com/vunone/ennoia/blob/main/docs/cli.md).
+
+## Serve an index (REST + MCP)
+
+Stage 3 ships two remote interfaces. Both accept the same `--store`
+prefix scheme (filesystem path, `qdrant:<collection>`, or
+`pgvector:<collection>`) as `ennoia index`:
+
+```bash
+# REST — full CRUD for application integration.
+export ENNOIA_API_KEY=sekret
+ennoia api --store ./my_index --schema my_schemas.py --port 8080
+
+# MCP — read-only tools (discover_schema, filter, search, retrieve) for agents,
+# pointed at a production Qdrant collection.
+export ENNOIA_QDRANT_URL=http://localhost:6333
+ennoia mcp --store qdrant:cases --schema my_schemas.py --transport sse --port 8090
+```
+
+Agents consume the MCP flow `discover_schema → filter → search(filter_ids=...) → retrieve`
+out of the box. See [docs/serve.md](https://github.com/vunone/ennoia/blob/main/docs/serve.md).
 
 ## Documentation
 
@@ -117,6 +151,8 @@ See [docs/cli.md](https://github.com/vunone/ennoia/blob/main/docs/cli.md).
 - [CLI reference](https://github.com/vunone/ennoia/blob/main/docs/cli.md)
 - [Adapters](https://github.com/vunone/ennoia/blob/main/docs/adapters.md)
 - [Stores](https://github.com/vunone/ennoia/blob/main/docs/stores.md)
+- [Serve (REST + MCP)](https://github.com/vunone/ennoia/blob/main/docs/serve.md)
+- [Testing utilities](https://github.com/vunone/ennoia/blob/main/docs/testing.md)
 
 ## License
 

@@ -77,6 +77,28 @@ async def test_close_on_fresh_store_is_noop(tmp_path: Path) -> None:
     await s.close()
 
 
+async def test_collections_are_isolated_in_one_file(tmp_path: Path) -> None:
+    # Two stores pointing at the same SQLite file with different
+    # collections must not see each other's rows — each collection is
+    # its own SQL table.
+    path = tmp_path / "shared.db"
+    invoices = SQLiteStructuredStore(path, collection="invoices")
+    emails = SQLiteStructuredStore(path, collection="emails")
+    await invoices.upsert("doc_1", {"amount": 100})
+    await emails.upsert("doc_1", {"subject": "hi"})
+    assert await invoices.get("doc_1") == {"amount": 100}
+    assert await emails.get("doc_1") == {"subject": "hi"}
+    assert await invoices.filter({}) == ["doc_1"]
+    assert await emails.filter({}) == ["doc_1"]
+    await invoices.close()
+    await emails.close()
+
+
+def test_invalid_collection_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="collection"):
+        SQLiteStructuredStore(tmp_path / "x.db", collection="bad name!")
+
+
 def test_survives_multiple_event_loops(tmp_path: Path) -> None:
     """Two ``asyncio.run`` calls against one store must both succeed.
 

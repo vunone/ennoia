@@ -1,0 +1,104 @@
+site_name: Ennoia
+site_description: Declarative Document Indexing (DDI) Schemas for RAG — LLM-powered pre-indexing and hybrid retrieval.
+site_url: https://vunone.github.io/ennoia/
+repo_url: https://github.com/vunone/ennoia
+repo_name: vunone/ennoia
+edit_uri: edit/main/docs/
+
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            separate_signature: true
+            merge_init_into_class: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            filters:
+              - "!^_"
+  - mike:
+      canonical_version: latest
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+
+extra:
+  version:
+    provider: mike
+    default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/vunone/ennoia
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/ennoia/
+
+nav:
+  - Home: index.md
+  - Guides:
+    - Quickstart: quickstart.md
+    - Concepts: concepts.md
+    - Schema authoring: schemas.md
+    - Filter language: filters.md
+    - Adapters: adapters.md
+    - Stores: stores.md
+    - CLI: cli.md
+    - Servers (REST + MCP): serve.md
+    - Testing: testing.md
+  - Reference:
+    - API reference: api-reference.md
+  - Cookbook:
+    - MCP agent loop: cookbook/mcp-agent.md
+    - Custom adapters and stores: cookbook/custom-adapter.md

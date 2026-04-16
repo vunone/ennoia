@@ -5,7 +5,137 @@ All notable changes to Ennoia are documented here. The format is based on
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v0.1.0 onward.
 
-## [0.2.1] — Unreleased
+## [0.3.0] — 2026-04-16
+
+Production interfaces (REST, MCP), full hybrid-store adapter set
+(Qdrant, pgvector), and a public testing utility package. Docs ship as
+a mkdocs-material site. Governance scaffolding lands for the first time
+(`SECURITY.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, issue + PR templates,
+dependabot).
+
+Integration tests against live services (Qdrant, Ollama, pgvector,
+OpenAI, Anthropic) and performance benchmarks are **deferred** to a
+future release — the Stage 3 PR is already large. Stage 3 unit coverage
+stays at 100% line + branch via in-memory fakes and scripted mocks.
+
+### Added
+
+- **`ennoia api` CLI subcommand** — boots the FastAPI REST server
+  against a filesystem store. Endpoints: `GET /discover`, `POST /filter`,
+  `POST /search`, `GET /retrieve/{source_id}`, `POST /index`,
+  `DELETE /delete/{source_id}`. Filter-validation failures surface as
+  HTTP 422 with the canonical `docs/filters.md` error shape.
+- **`ennoia mcp` CLI subcommand** — boots the FastMCP read-only server.
+  Transports: `sse | stdio | http` per `.ref/USAGE.md §5`. Exposes
+  `discover_schema`, `filter`, `search`, `retrieve` tools.
+- **`ennoia.server` package** — `create_app(ctx)` (FastAPI) and
+  `create_mcp(ctx)` (FastMCP). Shared `ServerContext(pipeline, auth)`.
+  Pluggable `AuthHook` protocol with `static_bearer_auth`,
+  `env_bearer_auth` (reads `ENNOIA_API_KEY`), and `no_auth` builders.
+- **`ennoia.testing` package** — `MockLLMAdapter` (scripted/callable/list
+  responses), `MockEmbeddingAdapter` (deterministic hash-seeded unit
+  vectors), `MockStore` (in-memory `HybridStore` with cosine similarity).
+  Exposed to downstream pytest suites via a `pytest11` entry point:
+  `mock_store`, `mock_llm`, `mock_embedding` fixtures are auto-discovered.
+- **`ennoia.store.vector.qdrant.QdrantVectorStore`** — pure vector
+  backend with async `qdrant-client`. Stable UUIDv5 point ids;
+  `restrict_to` and `index` filters honour the Stage 3 Pipeline
+  contract.
+- **`ennoia.store.hybrid.qdrant.QdrantHybridStore`** — single-collection
+  hybrid backend using Qdrant's named vectors (one slot per semantic
+  index). Filter translator covers `eq`, `in`, range, `is_null`,
+  `contains_any`, and list-contains natively; `startswith`,
+  string-`contains`, and `contains_all` post-filter candidate payloads
+  via the canonical `apply_filters`.
+- **`ennoia.store.hybrid.pgvector.PgVectorHybridStore`** — PostgreSQL +
+  pgvector hybrid backend. Single jsonb column + nullable per-index
+  `vector(N)` columns materialised on first use. Full 11-operator SQL
+  translator (`_sql_filter.build_where`) — no Python residual.
+- **Multi-collection support end-to-end.** Every store accepts a
+  `collection: str = "documents"` kwarg (SQLite table name, Parquet /
+  NumPy file basename, Qdrant collection, pgvector table). `Store.from_path`
+  gains `collection=` and places the filesystem layout under
+  `<path>/<collection>/`, so multiple pipelines can share one project
+  root without colliding. Collection names validate against
+  `^[A-Za-z_][A-Za-z0-9_]*$` via the new
+  `ennoia.store.base.validate_collection_name` helper.
+- **CLI reaches the hybrid stores.** `ennoia index`, `ennoia search`,
+  `ennoia api`, and `ennoia mcp` gain a prefix-qualified `--store`:
+  plain path / `file:<path>` → filesystem; `qdrant:<collection>` (with
+  `--qdrant-url` / `--qdrant-api-key`, env-var backed) →
+  `QdrantHybridStore`; `pgvector:<collection>` (with `--pg-dsn`) →
+  `PgVectorHybridStore`. A new `parse_store_spec` in
+  `ennoia.cli.factories` mirrors the existing `parse_llm_spec` /
+  `parse_embedding_spec` pattern. A `--collection` flag configures the
+  filesystem backend (defaults to `documents`).
+- **Pipeline public API** gains `afilter`, `aretrieve`, `adelete`, plus
+  sync mirrors (`filter`, `retrieve`, `delete`). `asearch` accepts a
+  new `filter_ids=` kw-only parameter for the MCP two-phase flow
+  (`filter → search(filter_ids=...)`), and a new `index=` parameter to
+  restrict vector search to a single semantic index. `filters=` and
+  `filter_ids=` are mutually exclusive.
+- **Store ABC additions:** `StructuredStore.delete`,
+  `VectorStore.delete_by_source`, `HybridStore.delete`, and
+  `HybridStore.filter`. Declared as concrete methods raising
+  `NotImplementedError` (not `@abstractmethod`) so Stage-2 subclasses
+  that predate the contract remain instantiable.
+- **`HybridStore` persistence in `Pipeline._apersist`** — the
+  `NotImplementedError` from earlier stages is replaced with a full
+  single-roundtrip upsert path (vectors dict keyed by semantic index
+  name).
+- **Pyproject extras:** `qdrant`, `pgvector`, `server`, `docs`. The
+  `all` extra expands to include them. New pytest11 entry point:
+  `ennoia = "ennoia.testing.fixtures"`.
+- **Governance:** `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`,
+  `.github/ISSUE_TEMPLATE/` (bug, feature, config), PR template,
+  dependabot.yml.
+- **Docs site:** `mkdocs.yml` + `mkdocstrings-python` API reference +
+  `mike` versioning. New pages: `serve.md` (REST + MCP), `testing.md`
+  (ennoia.testing), `api-reference.md`, cookbook entries (`mcp-agent`,
+  `custom-adapter`).
+
+### Changed
+
+- **Breaking:** `PgVectorHybridStore(table_prefix=...)` → `collection=...`.
+  The parameter rename unifies naming with every other store; the
+  generated table name is now the collection itself (no `_docs` suffix).
+  Existing deployments must rename their table or recreate the store
+  under the new name.
+- **Breaking:** `ennoia try --embedding` is removed. `try` is a
+  single-document schema/LLM debug tool and never touched embeddings;
+  the flag was documented "loaded but unused" and is gone.
+- `VectorStore.search` and `HybridStore.hybrid_search` gain a kw-only
+  `index: str | None = None` parameter for semantic-index scoping.
+  Existing built-in backends honour it; third-party subclasses will
+  need to accept and propagate it.
+- `_ensure_collection` on `QdrantHybridStore` derives vector dimensions
+  from the first upsert and remembers the named-vector spec for the
+  lifetime of the instance; subsequent calls skip the roundtrip.
+- Spec docs (`.ref/USAGE.md §5`, `.ref/IMPLEMENTATION.md §Stage 3`)
+  updated to reflect the `ennoia api` / `ennoia mcp` command split
+  (the original spec called for a single `ennoia serve` — revised
+  during Stage 3 planning for clearer separation of REST vs MCP).
+
+### Migration
+
+- Third-party `VectorStore` / `HybridStore` subclasses must add the
+  kw-only `index: str | None = None` parameter to `search` /
+  `hybrid_search`. The parameter is optional and safe to ignore on
+  backends that don't model per-index scoping.
+- Third-party stores that want delete support should override the new
+  `delete` / `delete_by_source` methods; the defaults raise
+  `NotImplementedError("override me")`.
+- `PgVectorHybridStore(table_prefix="foo")` callers: pass `collection="foo"`
+  instead. The generated table name changes from `foo_docs` to `foo`.
+- `Store.from_path(path)` now builds under `<path>/documents/` by
+  default (the `documents` segment is the new collection subdirectory).
+  Existing on-disk indices built with v0.2.x will not be found at the
+  old layout — either move the files into a collection subdirectory or
+  re-run `ennoia index` pointed at the new collection.
+- `ennoia try` no longer accepts `--embedding`. Drop the flag from any
+  existing shell scripts.
+
+## [0.2.1] — 2026-04-16
 
 All I/O is async: embedding adapters, store backends, and the query
 planner. The pipeline parallelises embedding work per document and
@@ -65,7 +195,7 @@ exposes a single concurrency knob for resource-constrained runs.
   `store.filter(...)` / `store.search(...)` outside the pipeline must
   now `await` those calls.
 
-## [0.2.0] — Unreleased
+## [0.2.0] — 2026-04-15
 
 Emission manifest & superschema: the framework now knows every possible
 field at pipeline init.
@@ -127,7 +257,7 @@ class Parent(BaseStructure):
         return [Child]
 ```
 
-## [0.1.0] — Unreleased
+## [0.1.0] — 2026-04-15
 
 First public release. Stage 2 (Working Concept) in
 `.ref/IMPLEMENTATION.md` — pip-installable, CLI, strict CI.

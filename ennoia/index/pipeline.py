@@ -17,12 +17,12 @@ from ennoia.index.validation import validate_filters
 from ennoia.schema.base import BaseSemantic, BaseStructure, get_schema_namespace
 from ennoia.schema.manifest import build_manifest
 from ennoia.schema.merging import Superschema, build_superschema
+from ennoia.store.base import HybridStore
 from ennoia.utils.ids import extract_source_id, make_semantic_vector_id
 
 if TYPE_CHECKING:
     from ennoia.adapters.embedding.base import EmbeddingAdapter
     from ennoia.adapters.llm.base import LLMAdapter
-    from ennoia.store.base import HybridStore
     from ennoia.store.composite import Store
 
 __all__ = ["Pipeline"]
@@ -74,6 +74,14 @@ class Pipeline:
             raise ValueError(f"concurrency must be >= 1 or None, got {concurrency}")
         self._concurrency = concurrency
 
+    def schemas(self) -> list[type[BaseStructure] | type[BaseSemantic]]:
+        """Return the root schemas (structural + semantic) passed at construction.
+
+        Stable public accessor used by the server layer (:mod:`ennoia.server`)
+        to render the discovery payload without reaching into private state.
+        """
+        return [*self._structural, *self._semantics]
+
     def _make_semaphore(self) -> asyncio.Semaphore | None:
         # Semaphores bind to the running event loop, so we instantiate them
         # inside the async methods rather than at __init__ time.
@@ -89,8 +97,28 @@ class Pipeline:
         query: str,
         filters: dict[str, Any] | None = None,
         top_k: int = 10,
+        *,
+        filter_ids: list[str] | None = None,
+        index: str | None = None,
     ) -> SearchResult:
-        return asyncio.run(self.asearch(query=query, filters=filters, top_k=top_k))
+        return asyncio.run(
+            self.asearch(
+                query=query,
+                filters=filters,
+                top_k=top_k,
+                filter_ids=filter_ids,
+                index=index,
+            )
+        )
+
+    def filter(self, filters: dict[str, Any] | None = None) -> list[str]:
+        return asyncio.run(self.afilter(filters=filters))
+
+    def retrieve(self, source_id: str) -> dict[str, Any] | None:
+        return asyncio.run(self.aretrieve(source_id=source_id))
+
+    def delete(self, source_id: str) -> bool:
+        return asyncio.run(self.adelete(source_id=source_id))
 
     async def aindex(self, text: str, source_id: str) -> IndexResult:
         start = time.perf_counter()
@@ -137,15 +165,46 @@ class Pipeline:
         query: str,
         filters: dict[str, Any] | None = None,
         top_k: int = 10,
+        *,
+        filter_ids: list[str] | None = None,
+        index: str | None = None,
     ) -> SearchResult:
+        """Run vector search, optionally restricted by filters or pre-computed ids.
+
+        ``filters`` and ``filter_ids`` are mutually exclusive:
+
+        - ``filters=...`` is the classic one-shot flow — validate filters, run
+          the structured filter on this call, then vector search.
+        - ``filter_ids=[...]`` is the two-phase MCP flow — the caller has
+          already run :meth:`afilter` and passes surviving ids directly;
+          structured filtering is skipped.
+
+        ``index`` optionally restricts vector search to a single semantic index.
+        """
+        if filters and filter_ids is not None:
+            raise ValueError(
+                "Pass either filters= or filter_ids=, not both."
+                " Use afilter() to resolve filters to ids, then pass those ids back in."
+            )
         start = time.perf_counter()
-        validate_filters(filters, self._superschema)
+        if filter_ids is None:
+            validate_filters(filters, self._superschema)
         query_vector = await self.embedding.embed_query(query)
-        raw_hits = await plan_search(self.store, filters, query_vector, top_k)
+        raw_hits = await plan_search(
+            self.store,
+            filters,
+            query_vector,
+            top_k,
+            candidate_ids=filter_ids,
+            index=index,
+        )
 
         from ennoia.store.composite import Store
 
-        structured_store = self.store.structured if isinstance(self.store, Store) else None
+        # ``self.store`` is typed Store | HybridStore; use isinstance to pick
+        # the right ``get`` source of truth for filling in each hit's
+        # structured record.
+        record_source: Store | HybridStore = self.store
 
         grouped: dict[str, SearchHit] = {}
         for vector_id, score, metadata in raw_hits:
@@ -157,8 +216,10 @@ class Pipeline:
                 continue
 
             structural_record: dict[str, Any] = {}
-            if structured_store is not None:
-                structural_record = await structured_store.get(source_id) or {}
+            if isinstance(record_source, Store):
+                structural_record = await record_source.structured.get(source_id) or {}
+            else:
+                structural_record = await record_source.get(source_id) or {}
 
             semantic_text = metadata.get("text", "")
             index_name = metadata.get("index", "")
@@ -180,14 +241,45 @@ class Pipeline:
         )
         return SearchResult(hits=hits_sorted)
 
-    async def _apersist(self, result: IndexResult, semaphore: asyncio.Semaphore | None) -> None:
+    async def afilter(self, filters: dict[str, Any] | None = None) -> list[str]:
+        """Resolve ``filters`` to the list of matching ``source_id``s.
+
+        The first half of the MCP two-phase flow (``filter → search``). The
+        returned list is meant to be passed back in via
+        :meth:`asearch(filter_ids=...)` on a subsequent call.
+        """
         from ennoia.store.composite import Store
 
-        if not isinstance(self.store, Store):
-            # HybridStore persistence is Stage 3 territory; bail gracefully.
-            raise NotImplementedError(
-                "Persistence for HybridStore implementations arrives in a later stage."
-            )
+        validate_filters(filters, self._superschema)
+        if isinstance(self.store, Store):
+            return await self.store.structured.filter(filters or {})
+        return await self.store.filter(filters or {})
+
+    async def aretrieve(self, source_id: str) -> dict[str, Any] | None:
+        """Return the full structured record for ``source_id``, or None if absent."""
+        from ennoia.store.composite import Store
+
+        if isinstance(self.store, Store):
+            return await self.store.structured.get(source_id)
+        return await self.store.get(source_id)
+
+    async def adelete(self, source_id: str) -> bool:
+        """Remove every structured + vector trace of ``source_id``.
+
+        Returns ``True`` if anything was removed on either side. Composite
+        stores fan the delete out to both halves; hybrid stores delegate to a
+        single backend call.
+        """
+        from ennoia.store.composite import Store
+
+        if isinstance(self.store, Store):
+            structured_removed = await self.store.structured.delete(source_id)
+            vectors_removed = await self.store.vector.delete_by_source(source_id)
+            return structured_removed or vectors_removed > 0
+        return await self.store.delete(source_id)
+
+    async def _apersist(self, result: IndexResult, semaphore: asyncio.Semaphore | None) -> None:
+        from ennoia.store.composite import Store
 
         # Seed every superschema field with None so documents that didn't
         # activate all possible emission branches still produce a uniform
@@ -201,11 +293,30 @@ class Pipeline:
             if ns is not None:
                 dumped = {f"{ns}__{k}": v for k, v in dumped.items()}
             flat.update(dumped)
-        await self.store.structured.upsert(result.source_id, flat)
 
         # Empty semantic answers are a signal from the LLM, not an invitation
         # to embed the full document; skip them so we don't pollute the index.
         pending = [(name, text) for name, text in result.semantic.items() if text]
+
+        if isinstance(self.store, HybridStore):
+            # Native hybrid: embed first (if needed), then one unified upsert.
+            vectors_dict: dict[str, list[float]] = {}
+            if pending:
+                texts = [text for _, text in pending]
+                embedded = await self._embed_documents(texts, semaphore)
+                vectors_dict = {
+                    name: vector for (name, _), vector in zip(pending, embedded, strict=True)
+                }
+            await self.store.upsert(
+                source_id=result.source_id,
+                data=flat,
+                vectors=vectors_dict,
+            )
+            return
+
+        # Composite path: persist structured record then individual vectors.
+        assert isinstance(self.store, Store)
+        await self.store.structured.upsert(result.source_id, flat)
         if not pending:
             return
 

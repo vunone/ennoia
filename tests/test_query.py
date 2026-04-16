@@ -22,9 +22,11 @@ class _RecordingVectorStore(InMemoryVectorStore):
         query_vector: list[float],
         top_k: int,
         restrict_to: list[str] | None = None,
+        *,
+        index: str | None = None,
     ) -> list[tuple[str, float, dict[str, Any]]]:
         self.last_restrict_to = restrict_to
-        return await super().search(query_vector, top_k, restrict_to)
+        return await super().search(query_vector, top_k, restrict_to, index=index)
 
 
 async def test_plan_search_composite_store_passes_restrict_to() -> None:
@@ -84,6 +86,8 @@ class _FakeHybrid(HybridStore):
         filters: dict[str, Any],
         query_vector: list[float],
         top_k: int,
+        *,
+        index: str | None = None,
     ) -> list[tuple[str, float, dict[str, Any]]]:
         self.calls.append(
             {"filters": dict(filters), "query_vector": list(query_vector), "top_k": top_k}

@@ -14,12 +14,15 @@ def cosine_search(
     query_vector: list[float],
     top_k: int,
     restrict_to: list[str] | None = None,
+    *,
+    index: str | None = None,
 ) -> list[tuple[str, float, dict[str, Any]]]:
     """Return the ``top_k`` most similar entries to ``query_vector``.
 
     ``entries`` is a mapping from vector id to ``(vector, metadata)``. The
     restrict-list filters by ``metadata['source_id']`` — the canonical filter
-    hook used by the two-phase query planner.
+    hook used by the two-phase query planner. When ``index`` is set, only
+    entries whose metadata records the same semantic index name participate.
     """
     if not entries:
         return []
@@ -36,6 +39,8 @@ def cosine_search(
     scored: list[tuple[str, float, dict[str, Any]]] = []
     for vector_id, (vec, metadata) in entries.items():
         if allowed is not None and metadata.get("source_id") not in allowed:
+            continue
+        if index is not None and metadata.get("index") != index:
             continue
         vec_arr = np.asarray(vec, dtype=float)
         v_norm = float(np.linalg.norm(vec_arr))
