@@ -91,3 +91,11 @@ Adapters that need third-party packages load them through
 `ImportError: {pkg} is required. Install with 'pip install ennoia[{extra}]'`
 on miss. Follow the same pattern in custom adapters so users get a
 consistent error surface.
+
+## Further reading
+
+- [Cookbook — Custom adapters and stores](cookbook/custom-adapter.md)
+  walks through full worked examples for a vLLM LLM adapter, a Voyage
+  embedding adapter with asymmetric doc/query flows, and a custom
+  `HybridStore` — including the event-loop and optional-dependency
+  conventions every built-in adapter follows.

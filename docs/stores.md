@@ -13,17 +13,21 @@ single `await` path regardless of backing storage.
 
 - `StructuredStore`: `async upsert` / `async filter` / `async get`
 - `VectorStore`: `async upsert` / `async search`
-- `HybridStore`: `async upsert` / `async hybrid_search` / `async get` (Stage 3)
+- `HybridStore`: `async upsert` / `async hybrid_search` / `async get` /
+  `async filter` (powers the two-phase MCP flow)
 
 ## Built-in backends
 
 | Kind | Class | Extra | Notes |
 |---|---|---|---|
 | Structured | `InMemoryStructuredStore` | — | Dev / testing |
-| Structured | `SQLiteStructuredStore` | — (`aiosqlite` is a base dep) | One table, JSON payload, scalar ops push down to SQL |
-| Structured | `ParquetStructuredStore` | `filesystem` | One `.parquet` file, read-modify-write upserts (pandas dispatched via `asyncio.to_thread`) |
+| Structured | `SQLiteStructuredStore` | — (`aiosqlite` is a base dep) | One table per `collection`, JSON payload, scalar ops push down to SQL |
+| Structured | `ParquetStructuredStore` | `filesystem` | `{collection}.parquet`, read-modify-write upserts (pandas dispatched via `asyncio.to_thread`) |
 | Vector | `InMemoryVectorStore` | `sentence-transformers` (for numpy) | Dev / testing |
-| Vector | `FilesystemVectorStore` | `filesystem` / `sentence-transformers` | `vectors.npy` + `ids.json` + `metadata.json` (numpy dispatched via `asyncio.to_thread`) |
+| Vector | `FilesystemVectorStore` | `filesystem` / `sentence-transformers` | `{collection}.npy` + `{collection}_ids.json` + `{collection}_metadata.json` (numpy dispatched via `asyncio.to_thread`) |
+| Vector | `QdrantVectorStore` | `qdrant` | Qdrant collection, one unnamed vector slot per point, UUIDv5 stable point ids |
+| Hybrid | `QdrantHybridStore` | `qdrant` | One Qdrant collection holds structured payload + named vectors; filter + vector search in a single native query |
+| Hybrid | `PgVectorHybridStore` | `pgvector` | PostgreSQL + pgvector, JSONB payload + per-index vector columns; every operator pushes down to SQL via `asyncpg` |
 
 `SQLiteStructuredStore` opens its `aiosqlite` connection lazily and rebinds
 to the running event loop on every call — the sync `Pipeline.index` /
@@ -33,24 +37,33 @@ connection from a closed loop would otherwise raise.
 ## `Store.from_path`
 
 The CLI default. Builds a `ParquetStructuredStore` + `FilesystemVectorStore`
-under one directory:
+under `<path>/<collection>/`. The `collection` kwarg (default
+`"documents"`) becomes the namespace subdirectory, so multiple pipelines
+can share one project root without colliding:
 
 ```python
 from ennoia.store import Store
-store = Store.from_path("./my_index")
+
+invoices = Store.from_path("./my_index", collection="invoices")
+emails = Store.from_path("./my_index", collection="emails")
 ```
 
 Layout:
 
 ```
 my_index/
-├── structured/
-│   └── structured.parquet
-└── vectors/
-    ├── vectors.npy
-    ├── ids.json
-    └── metadata.json
+├── invoices/
+│   ├── structured/documents.parquet
+│   └── vectors/{documents.npy, documents_ids.json, documents_metadata.json}
+└── emails/
+    ├── structured/documents.parquet
+    └── vectors/{documents.npy, documents_ids.json, documents_metadata.json}
 ```
+
+Collection names must match `^[A-Za-z_][A-Za-z0-9_]*$` — the same
+identifier grammar enforced by the SQL-backed stores — so filesystem
+layouts, SQLite tables, and pgvector tables all use the same collection
+name without translation.
 
 ## SQLite specifics
 
@@ -90,5 +103,68 @@ Backends without a native async client should wrap each blocking call in
 `await asyncio.to_thread(...)` — the parquet and filesystem-vector stores
 are the canonical examples.
 
-Hybrid stores (single roundtrip for filter + vector search) land in
-Stage 3 alongside the Qdrant integration.
+## Qdrant
+
+Install the `qdrant` extra:
+
+```bash
+pip install "ennoia[qdrant]"
+```
+
+Two backends ship against Qdrant:
+
+- `QdrantVectorStore(collection, *, url=..., host=..., port=..., api_key=..., vector_size=None, distance="Cosine", client=None)`
+  — a pure `VectorStore`. One unnamed vector slot per point, UUIDv5 point
+  ids so repeated upserts overwrite cleanly. Pair it with any
+  `StructuredStore` via the composite `Store(...)`.
+- `QdrantHybridStore(collection, *, url=..., host=..., port=..., api_key=..., distance="Cosine", list_payload_fields=frozenset(), client=None)`
+  — a `HybridStore`. One point per `source_id` with named vectors per
+  semantic index; `hybrid_search` issues a single native query that
+  combines the structured filter with the vector similarity search.
+  `list_payload_fields` marks payload keys that should be treated as
+  lists at filter-translation time (for `contains_all` / `contains_any`).
+
+```python
+from ennoia.store.hybrid.qdrant import QdrantHybridStore
+
+store = QdrantHybridStore(
+    collection="cases",
+    url="http://localhost:6333",
+    list_payload_fields=frozenset({"tags"}),
+)
+```
+
+## pgvector
+
+Install the `pgvector` extra:
+
+```bash
+pip install "ennoia[pgvector]"
+```
+
+`PgVectorHybridStore(dsn, *, collection="documents", connection=None)` is
+a `HybridStore` backed by a single PostgreSQL table named after
+`collection`, with a JSONB payload column and one `vector(N)` column per
+semantic index (materialised lazily on first sight of each index). Every
+filter operator compiles to a parameterised `asyncpg` query via
+`ennoia.store.hybrid._sql_filter`, so there is no Python post-filter
+residual.
+
+```python
+from ennoia.store.hybrid.pgvector import PgVectorHybridStore
+
+store = PgVectorHybridStore(
+    dsn="postgresql://user:pass@localhost:5432/ennoia",
+    collection="cases",
+)
+```
+
+Both hybrid backends plug directly into `Pipeline(store=...)` — no
+composite `Store(...)` wrapping required.
+
+## Custom hybrid stores
+
+See [Cookbook — Custom adapters and stores](cookbook/custom-adapter.md#custom-hybrid-store)
+for a walkthrough of the `HybridStore` contract and a pattern for
+post-filtering residual operators via the canonical `apply_filters`
+evaluator.

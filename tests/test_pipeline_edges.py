@@ -115,6 +115,8 @@ def test_search_updates_score_when_second_hit_is_higher() -> None:
             filters: dict[str, Any],
             query_vector: list[float],
             top_k: int,
+            *,
+            index: str | None = None,
         ) -> list[tuple[str, float, dict[str, Any]]]:
             # Same source, lower score first — forces the score-update branch.
             return [
@@ -176,6 +178,7 @@ def test_empty_semantic_answer_skips_vector_upsert() -> None:
 class _FakeHybridStore(HybridStore):
     def __init__(self) -> None:
         self._hits: list[tuple[str, float, dict[str, Any]]] = []
+        self.upserts: list[tuple[str, dict[str, Any], dict[str, list[float]]]] = []
 
     def set_hits(self, hits: list[tuple[str, float, dict[str, Any]]]) -> None:
         self._hits = hits
@@ -186,13 +189,15 @@ class _FakeHybridStore(HybridStore):
         data: dict[str, Any],
         vectors: dict[str, list[float]],
     ) -> None:
-        raise AssertionError("upsert unused in this test")
+        self.upserts.append((source_id, dict(data), {k: list(v) for k, v in vectors.items()}))
 
     async def hybrid_search(
         self,
         filters: dict[str, Any],
         query_vector: list[float],
         top_k: int,
+        *,
+        index: str | None = None,
     ) -> list[tuple[str, float, dict[str, Any]]]:
         return self._hits
 
@@ -228,15 +233,45 @@ def test_search_against_hybrid_store_skips_structured_get() -> None:
     assert hits.hits[0].semantic == {"Summary": "hello"}
 
 
-def test_persist_to_hybrid_store_raises_not_implemented() -> None:
+def test_persist_to_hybrid_store_calls_upsert_once() -> None:
+    # Stage 3: the HybridStore persistence path flattens structural fields
+    # and embeds semantic answers into a single ``upsert(source_id, data, vectors)``
+    # call, with ``vectors`` keyed by semantic index name.
+    store = _FakeHybridStore()
     pipeline = Pipeline(
-        schemas=[_Doc],
-        store=_FakeHybridStore(),
-        llm=_LLM({"Extract doc metadata.": {"cat": "legal", "_confidence": 0.9}}, {}),
+        schemas=[_Doc, _Summary],
+        store=store,
+        llm=_LLM(
+            json_map={"Extract doc metadata.": {"cat": "legal", "_confidence": 0.9}},
+            text_map={"Summarise doc.": "a summary"},
+        ),
         embedding=_Embedding(),
     )
-    with pytest.raises(NotImplementedError):
-        pipeline.index(text="body", source_id="doc_1")
+    pipeline.index(text="body", source_id="doc_1")
+    assert len(store.upserts) == 1
+    source_id, data, vectors = store.upserts[0]
+    assert source_id == "doc_1"
+    assert data["cat"] == "legal"
+    # Semantic index name keys the vector dict — matches HybridStore.upsert ABC.
+    assert list(vectors.keys()) == ["_Summary"]
+    assert len(vectors["_Summary"]) > 0
+
+
+def test_persist_to_hybrid_store_skips_vectors_when_semantic_empty() -> None:
+    store = _FakeHybridStore()
+    pipeline = Pipeline(
+        schemas=[_Doc, _Summary],
+        store=store,
+        llm=_LLM(
+            json_map={"Extract doc metadata.": {"cat": "legal", "_confidence": 0.9}},
+            text_map={"Summarise doc.": ""},  # empty semantic answer
+        ),
+        embedding=_Embedding(),
+    )
+    pipeline.index(text="body", source_id="doc_1")
+    assert len(store.upserts) == 1
+    _, _, vectors = store.upserts[0]
+    assert vectors == {}
 
 
 # Ensure numpy is imported — the embedding path relies on it via cosine_search.

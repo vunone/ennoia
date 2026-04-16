@@ -1,14 +1,17 @@
 """Parquet-backed structured store.
 
-One ``.parquet`` file under ``<path>/structured.parquet``. Every ``upsert``
-rewrites the whole file (simple + correct for the dev/ops scale this store
-targets). Filtering loads the records into memory and delegates to
-:func:`apply_filters` so operator semantics stay identical to every other
-backend.
+One ``.parquet`` file under ``<path>/<collection>.parquet``. Every
+``upsert`` rewrites the whole file (simple + correct for the dev/ops scale
+this store targets). Filtering loads the records into memory and delegates
+to :func:`apply_filters` so operator semantics stay identical to every
+other backend.
 
 ``pyarrow`` / ``pandas`` are sync libraries with no async API; the read /
 write paths are wrapped in :func:`asyncio.to_thread` so the event loop
 stays responsive while parquet I/O is in flight.
+
+Multiple collections can share a directory by instantiating with different
+``collection=`` names — each writes to its own ``{collection}.parquet``.
 
 Requires the ``filesystem`` extra (``pyarrow`` + ``pandas``).
 """
@@ -20,7 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ennoia.store.base import StructuredStore
+from ennoia.store.base import StructuredStore, validate_collection_name
 from ennoia.utils.filters import apply_filters
 from ennoia.utils.imports import require_module
 
@@ -28,10 +31,11 @@ __all__ = ["ParquetStructuredStore"]
 
 
 class ParquetStructuredStore(StructuredStore):
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, collection: str = "documents") -> None:
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
-        self._file = self.path / "structured.parquet"
+        self.collection = validate_collection_name(collection)
+        self._file = self.path / f"{self.collection}.parquet"
         self._records: dict[str, dict[str, Any]] = {}
         # Eager load is sync because ``__init__`` cannot be async; the
         # file lives on the local disk and the dataset targeted by this
@@ -67,3 +71,9 @@ class ParquetStructuredStore(StructuredStore):
 
     async def filter(self, query: dict[str, Any]) -> list[str]:
         return apply_filters(self._records.items(), query)
+
+    async def delete(self, source_id: str) -> bool:
+        if self._records.pop(source_id, None) is None:
+            return False
+        await asyncio.to_thread(self._flush_sync)
+        return True

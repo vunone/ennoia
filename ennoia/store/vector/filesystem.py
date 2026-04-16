@@ -1,10 +1,16 @@
 """Filesystem-backed vector store — NumPy arrays + JSON sidecars.
 
-Persists three files under ``<path>/``:
+Persists three files under ``<path>/``, named after the store's
+``collection`` (default ``"documents"``):
 
-- ``vectors.npy``: 2D float array, one row per vector, written with :func:`numpy.save`.
-- ``ids.json``: ordered list of vector ids aligned with the rows of ``vectors.npy``.
-- ``metadata.json``: mapping vector-id → metadata dict.
+- ``{collection}.npy``: 2D float array, one row per vector, written with
+  :func:`numpy.save`.
+- ``{collection}_ids.json``: ordered list of vector ids aligned with the
+  rows of the ``.npy`` array.
+- ``{collection}_metadata.json``: mapping vector-id → metadata dict.
+
+Multiple collections can share a directory by instantiating with different
+``collection=`` names — each writes to its own prefixed set of files.
 
 Upserts rewrite all three files — the same read-modify-write idiom as
 :class:`ennoia.store.structured.parquet.ParquetStructuredStore`. Search
@@ -25,7 +31,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ennoia.store.base import VectorStore
+from ennoia.store.base import VectorStore, validate_collection_name
 from ennoia.store.vector._numpy import cosine_search
 from ennoia.utils.imports import require_module
 
@@ -33,12 +39,13 @@ __all__ = ["FilesystemVectorStore"]
 
 
 class FilesystemVectorStore(VectorStore):
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, collection: str = "documents") -> None:
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
-        self._vectors_file = self.path / "vectors.npy"
-        self._ids_file = self.path / "ids.json"
-        self._metadata_file = self.path / "metadata.json"
+        self.collection = validate_collection_name(collection)
+        self._vectors_file = self.path / f"{self.collection}.npy"
+        self._ids_file = self.path / f"{self.collection}_ids.json"
+        self._metadata_file = self.path / f"{self.collection}_metadata.json"
         self._entries: dict[str, tuple[list[float], dict[str, Any]]] = {}
         self._load()
 
@@ -81,5 +88,17 @@ class FilesystemVectorStore(VectorStore):
         query_vector: list[float],
         top_k: int,
         restrict_to: list[str] | None = None,
+        *,
+        index: str | None = None,
     ) -> list[tuple[str, float, dict[str, Any]]]:
-        return cosine_search(self._entries, query_vector, top_k, restrict_to)
+        return cosine_search(self._entries, query_vector, top_k, restrict_to, index=index)
+
+    async def delete_by_source(self, source_id: str) -> int:
+        doomed = [
+            vid for vid, (_, meta) in self._entries.items() if meta.get("source_id") == source_id
+        ]
+        for vid in doomed:
+            del self._entries[vid]
+        if doomed:
+            await asyncio.to_thread(self._flush)
+        return len(doomed)

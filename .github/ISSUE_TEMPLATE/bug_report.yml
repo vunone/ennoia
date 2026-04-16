@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible bug in Ennoia.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report. Please provide a minimum
+        reproducible example — this is the single most useful thing
+        you can do to help us fix the issue quickly.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: mre
+    attributes:
+      label: Minimum reproducible example
+      description: A short Python script or CLI invocation that reproduces the bug.
+      render: python
+    validations:
+      required: true
+
+  - type: input
+    id: ennoia-version
+    attributes:
+      label: Ennoia version
+      description: Output of `pip show ennoia` or `python -c "import ennoia; print(ennoia.__version__)"`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: python-version
+    attributes:
+      label: Python version
+      options:
+        - "3.11"
+        - "3.12"
+        - "3.13"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / traceback
+      description: Paste the full traceback if one was produced. Redact any secrets first.
+      render: shell
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this has not been reported.
+          required: true

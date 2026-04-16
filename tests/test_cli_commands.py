@@ -77,8 +77,6 @@ def test_try_command_prints_fields_and_confidence(
             str(schema_file),
             "--llm",
             "fake:model",
-            "--embedding",
-            "fake:model",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -86,6 +84,30 @@ def test_try_command_prints_fields_and_confidence(
     assert "category" in result.output
     assert "confidence: 0.90" in result.output
     assert "Schema: Summary" in result.output
+
+
+def test_try_command_rejects_unknown_embedding_flag(
+    patched_adapters: None, schema_file: Path, tmp_path: Path
+) -> None:
+    # ``--embedding`` was removed in v0.3.0 — confirm typer rejects it.
+    doc = tmp_path / "doc.txt"
+    doc.write_text("body")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "try",
+            str(doc),
+            "--schema",
+            str(schema_file),
+            "--llm",
+            "fake:model",
+            "--embedding",
+            "fake:model",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--embedding" in result.output or "No such option" in result.output
 
 
 def test_index_then_search_roundtrip(
@@ -139,6 +161,83 @@ def test_index_then_search_roundtrip(
     assert "Results" in srch.output
 
 
+def test_index_then_search_respects_collection_flag(
+    patched_adapters: None, schema_file: Path, tmp_path: Path
+) -> None:
+    # Two pipelines under one store root with different --collection values
+    # must not see each other's documents.
+    docs_a = tmp_path / "invoices"
+    docs_a.mkdir()
+    (docs_a / "inv_1.txt").write_text("invoice body")
+    docs_b = tmp_path / "emails"
+    docs_b.mkdir()
+    (docs_b / "email_1.txt").write_text("email body")
+    store_dir = tmp_path / "shared"
+
+    runner = CliRunner()
+    assert (
+        runner.invoke(
+            cli_main.app,
+            [
+                "index",
+                str(docs_a),
+                "--schema",
+                str(schema_file),
+                "--store",
+                str(store_dir),
+                "--collection",
+                "invoices",
+                "--llm",
+                "fake:m",
+                "--embedding",
+                "fake:m",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli_main.app,
+            [
+                "index",
+                str(docs_b),
+                "--schema",
+                str(schema_file),
+                "--store",
+                str(store_dir),
+                "--collection",
+                "emails",
+                "--llm",
+                "fake:m",
+                "--embedding",
+                "fake:m",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    # Search the invoices collection — result must not mention email_1.
+    srch = runner.invoke(
+        cli_main.app,
+        [
+            "search",
+            "anything",
+            "--store",
+            str(store_dir),
+            "--collection",
+            "invoices",
+            "--llm",
+            "fake:m",
+            "--embedding",
+            "fake:m",
+        ],
+    )
+    assert srch.exit_code == 0, srch.output
+    assert "email_1.txt" not in srch.output
+    assert (store_dir / "invoices").is_dir()
+    assert (store_dir / "emails").is_dir()
+
+
 def test_search_rejects_invalid_filter(
     patched_adapters: None, schema_file: Path, tmp_path: Path
 ) -> None:
@@ -173,14 +272,14 @@ def test_search_rejects_invalid_filter(
 # ---------------------------------------------------------------------------
 
 
-def test_load_schemas_rejects_missing_file(tmp_path: Path) -> None:
+def testload_schemas_rejects_missing_file(tmp_path: Path) -> None:
     import typer
 
     with pytest.raises(typer.BadParameter, match="Schema file not found"):
-        cli_main._load_schemas(tmp_path / "nope.py")
+        cli_main.load_schemas(tmp_path / "nope.py")
 
 
-def test_load_schemas_rejects_unimportable_path(tmp_path: Path) -> None:
+def testload_schemas_rejects_unimportable_path(tmp_path: Path) -> None:
     # A file without a recognised loader suffix: ``spec_from_file_location``
     # returns ``None`` because it can't pick a loader for ``.txt``.
     import typer
@@ -188,19 +287,19 @@ def test_load_schemas_rejects_unimportable_path(tmp_path: Path) -> None:
     bogus = tmp_path / "not_a_module.txt"
     bogus.write_text("# not python")
     with pytest.raises(typer.BadParameter, match="Cannot import"):
-        cli_main._load_schemas(bogus)
+        cli_main.load_schemas(bogus)
 
 
-def test_load_schemas_rejects_module_with_no_schemas(tmp_path: Path) -> None:
+def testload_schemas_rejects_module_with_no_schemas(tmp_path: Path) -> None:
     import typer
 
     empty = tmp_path / "empty.py"
     empty.write_text("x = 1\n")
     with pytest.raises(typer.BadParameter, match="No BaseStructure/BaseSemantic"):
-        cli_main._load_schemas(empty)
+        cli_main.load_schemas(empty)
 
 
-def test_load_schemas_ignores_unrelated_classes(tmp_path: Path) -> None:
+def testload_schemas_ignores_unrelated_classes(tmp_path: Path) -> None:
     # A module with helper classes alongside schemas must return only the
     # schemas — covers the ``isinstance`` filter branch.
     schema_file = tmp_path / "mixed.py"
@@ -216,7 +315,7 @@ class Doc(BaseStructure):
     value: str
 """
     )
-    classes = cli_main._load_schemas(schema_file)
+    classes = cli_main.load_schemas(schema_file)
     names = [c.__name__ for c in classes]
     assert names == ["Doc"]
 

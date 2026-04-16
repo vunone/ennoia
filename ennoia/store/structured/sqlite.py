@@ -26,7 +26,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from ennoia.store.base import StructuredStore
+from ennoia.store.base import StructuredStore, validate_collection_name
 from ennoia.utils.filters import (
     apply_filters,
     coerce_filter_value,
@@ -53,12 +53,15 @@ _SQL_COMPARATOR = {
 class SQLiteStructuredStore(StructuredStore):
     """Structured store backed by a single SQLite file.
 
-    The table layout is deliberately minimal: ``documents(source_id PRIMARY KEY, data JSON)``.
+    The table layout is deliberately minimal: ``<collection>(source_id PRIMARY KEY, data JSON)``.
     All field semantics are driven by the JSON payload; there is no per-field column.
+    Multiple collections can coexist in one database file — use different
+    ``collection=`` names for each pipeline.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, collection: str = "documents") -> None:
         self.path = Path(path)
+        self.collection = validate_collection_name(collection)
         self._conn: aiosqlite.Connection | None = None
         self._conn_loop: asyncio.AbstractEventLoop | None = None
 
@@ -74,8 +77,8 @@ class SQLiteStructuredStore(StructuredStore):
         self._conn = await aiosqlite.connect(self.path)
         self._conn_loop = current
         await self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS documents (
+            f"""
+            CREATE TABLE IF NOT EXISTS {self.collection} (
                 source_id TEXT PRIMARY KEY,
                 data TEXT NOT NULL
             )
@@ -94,8 +97,8 @@ class SQLiteStructuredStore(StructuredStore):
         conn = await self._get_conn()
         payload = json.dumps(data, default=str)
         await conn.execute(
-            """
-            INSERT INTO documents(source_id, data) VALUES (?, ?)
+            f"""
+            INSERT INTO {self.collection}(source_id, data) VALUES (?, ?)
             ON CONFLICT(source_id) DO UPDATE SET data = excluded.data
             """,
             (source_id, payload),
@@ -105,7 +108,7 @@ class SQLiteStructuredStore(StructuredStore):
     async def get(self, source_id: str) -> dict[str, Any] | None:
         conn = await self._get_conn()
         async with conn.execute(
-            "SELECT data FROM documents WHERE source_id = ?",
+            f"SELECT data FROM {self.collection} WHERE source_id = ?",
             (source_id,),
         ) as cursor:
             row = await cursor.fetchone()
@@ -113,10 +116,21 @@ class SQLiteStructuredStore(StructuredStore):
             return None
         return dict(json.loads(row[0]))
 
+    async def delete(self, source_id: str) -> bool:
+        conn = await self._get_conn()
+        cursor = await conn.execute(
+            f"DELETE FROM {self.collection} WHERE source_id = ?",
+            (source_id,),
+        )
+        deleted = cursor.rowcount > 0
+        await cursor.close()
+        await conn.commit()
+        return deleted
+
     async def filter(self, query: dict[str, Any]) -> list[str]:
         conn = await self._get_conn()
         if not query:
-            async with conn.execute("SELECT source_id FROM documents") as cursor:
+            async with conn.execute(f"SELECT source_id FROM {self.collection}") as cursor:
                 return [row[0] async for row in cursor]
 
         sql_conditions: list[tuple[str, list[Any]]] = []
@@ -133,9 +147,9 @@ class SQLiteStructuredStore(StructuredStore):
         if sql_conditions:
             where = " AND ".join(clause for clause, _ in sql_conditions)
             params: list[Any] = [p for _, bag in sql_conditions for p in bag]
-            sql = f"SELECT source_id, data FROM documents WHERE {where}"
+            sql = f"SELECT source_id, data FROM {self.collection} WHERE {where}"
         else:
-            sql = "SELECT source_id, data FROM documents"
+            sql = f"SELECT source_id, data FROM {self.collection}"
             params = []
 
         async with conn.execute(sql, params) as cursor:

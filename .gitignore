@@ -38,6 +38,9 @@ env/
 coverage.xml
 .coverage.*
 
+# mkdocs build output
+/site/
+
 # OS
 .DS_Store
 Thumbs.db
