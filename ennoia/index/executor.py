@@ -21,8 +21,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ennoia.index.exceptions import SchemaError
 from ennoia.index.extractor import CONFIDENCE_KEY, extract_semantic, extract_structural
-from ennoia.schema.base import BaseSemantic, BaseStructure
+from ennoia.schema.base import BaseSemantic, BaseStructure, get_schema_extensions
 
 if TYPE_CHECKING:
     from ennoia.adapters.llm.protocols import LLMAdapter
@@ -115,7 +116,15 @@ async def execute_layers(
             batch.structural[schema.__name__] = instance
             batch.confidences[schema.__name__] = confidence
 
+            declared = set(get_schema_extensions(type(instance)))
             for child in instance.extend():
+                if child not in declared:
+                    raise SchemaError(
+                        f"{type(instance).__name__}.extend() returned "
+                        f"{child.__name__!r}, which is not declared in "
+                        f"Schema.extensions "
+                        f"{sorted(c.__name__ for c in declared)}."
+                    )
                 if issubclass(child, BaseSemantic):
                     if child not in seen_semantic:
                         semantic_queue.append((child, instance))

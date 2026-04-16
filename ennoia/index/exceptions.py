@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["ExtractionError", "FilterValidationError", "RejectException"]
+__all__ = [
+    "ExtractionError",
+    "FilterValidationError",
+    "RejectException",
+    "SchemaError",
+    "SchemaWarning",
+]
 
 
 class ExtractionError(Exception):
@@ -17,6 +23,22 @@ class RejectException(Exception):
     The pipeline catches this, returns an `IndexResult(rejected=True)`,
     and writes nothing to the stores. Intended for schema validators or
     `extend()` logic that detects an out-of-scope document.
+    """
+
+
+class SchemaError(Exception):
+    """Raised when a schema graph is malformed or emits undeclared classes.
+
+    Used both at pipeline init (manifest validation — cycles, incompatible
+    field merges, reserved field names, invalid namespace) and at runtime
+    (``extend()`` returning a class not listed in ``Schema.extensions``).
+    """
+
+
+class SchemaWarning(UserWarning):
+    """Emitted during pipeline init when the manifest is well-formed but
+    has soft issues — for example, divergent descriptions on a field that
+    is merged from multiple sources. Does not block initialization.
     """
 
 

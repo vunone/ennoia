@@ -12,22 +12,25 @@ from ennoia import BaseSemantic, BaseStructure, Pipeline, Store
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
+class Child(BaseStructure):
+    """Extract child based on parent."""
+
+    detail: str
+
+
 class Parent(BaseStructure):
     """Extract parent fields."""
 
     label: str
+
+    class Schema:
+        extensions = [Child]
 
     def extend(self) -> list[type[BaseStructure] | type[BaseSemantic]]:
         # Read _confidence set by the extractor; branch when above threshold.
         if getattr(self, "_confidence", 0.0) >= 0.8:
             return [Child]
         return []
-
-
-class Child(BaseStructure):
-    """Extract child based on parent."""
-
-    detail: str
 
 
 class RecordingLLM:
@@ -94,7 +97,9 @@ def test_confidence_stripped_from_store_payload() -> None:
     pipeline = _pipeline(llm)
     pipeline.index(text="body", source_id="d3")
     stored = pipeline.store.structured.get("d3")
-    assert stored == {"label": "x"}
+    # Child did not fire at 0.5 confidence; its 'detail' field is null-filled
+    # from the superschema so every document has a uniform column set.
+    assert stored == {"label": "x", "detail": None}
 
 
 def test_missing_confidence_defaults_to_one() -> None:

@@ -7,16 +7,16 @@ Paired with ``examples/fixtures/`` and the shell script
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 
-from ennoia import BaseSemantic, BaseStructure
+from ennoia import BaseSemantic, BaseStructure, Field
 
 
 class DocMeta(BaseStructure):
     """Extract basic document metadata."""
 
     category: Literal["legal", "medical", "financial"]
-    doc_date: date
+    doc_date: Annotated[date, Field(description="Datetime in ISO 8601 format")]
 
 
 class Summary(BaseSemantic):

@@ -14,7 +14,9 @@ from ennoia.index.extractor import CONFIDENCE_KEY
 from ennoia.index.query import plan_search
 from ennoia.index.result import IndexResult, SearchHit, SearchResult
 from ennoia.index.validation import validate_filters
-from ennoia.schema.base import BaseSemantic, BaseStructure
+from ennoia.schema.base import BaseSemantic, BaseStructure, get_schema_namespace
+from ennoia.schema.manifest import build_manifest
+from ennoia.schema.merging import Superschema, build_superschema
 from ennoia.utils.ids import extract_source_id, make_semantic_vector_id
 
 if TYPE_CHECKING:
@@ -53,6 +55,12 @@ class Pipeline:
         validate_schemas([*structural, *extracted_semantics])
         self._structural = structural
         self._semantics = extracted_semantics
+        # Resolve the emission manifest (transitive closure of Schema.extensions)
+        # and collapse it into the unified superschema once, at init. Both are
+        # cached on the Pipeline so _persist, asearch, and discovery all read
+        # the same source of truth.
+        self._manifest = build_manifest([*structural, *extracted_semantics])
+        self._superschema: Superschema = build_superschema(self._manifest)
         self.store = store
         self.llm = llm
         self.embedding = embedding
@@ -114,7 +122,7 @@ class Pipeline:
         top_k: int = 10,
     ) -> SearchResult:
         start = time.perf_counter()
-        validate_filters(filters, self._structural)
+        validate_filters(filters, self._superschema)
         query_vector = self.embedding.embed_query(query)
         raw_hits = plan_search(self.store, filters, query_vector, top_k)
 
@@ -164,11 +172,17 @@ class Pipeline:
                 "Persistence for HybridStore implementations arrives in a later stage."
             )
 
-        flat: dict[str, Any] = {}
+        # Seed every superschema field with None so documents that didn't
+        # activate all possible emission branches still produce a uniform
+        # structured record (crucial for tabular backends).
+        flat: dict[str, Any] = {name: None for name in self._superschema.all_field_names()}
         for instance in result.structural.values():
             # ``_confidence`` rides on the instance via extra='allow'; strip before persist.
             dumped = instance.model_dump(mode="json")
             dumped.pop(CONFIDENCE_KEY, None)
+            ns = get_schema_namespace(type(instance))
+            if ns is not None:
+                dumped = {f"{ns}__{k}": v for k, v in dumped.items()}
             flat.update(dumped)
         self.store.structured.upsert(result.source_id, flat)
 

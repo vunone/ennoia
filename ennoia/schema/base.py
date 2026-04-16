@@ -8,7 +8,42 @@ from pydantic import BaseModel, ConfigDict
 
 from ennoia.schema.operators import describe_field
 
-__all__ = ["BaseSemantic", "BaseStructure"]
+__all__ = [
+    "BaseSemantic",
+    "BaseStructure",
+    "get_schema_extensions",
+    "get_schema_namespace",
+]
+
+
+def get_schema_namespace(cls: type) -> str | None:
+    """Return the namespace declared on ``cls.Schema`` (None when unset).
+
+    User schemas declare their inner ``Schema`` as a bare class with no
+    base, so we read attributes via ``getattr`` with defaults rather than
+    rely on inheritance of a framework marker class.
+    """
+    schema = getattr(cls, "Schema", None)
+    if schema is None:
+        return None
+    ns = getattr(schema, "namespace", None)
+    return ns if isinstance(ns, str) and ns else None
+
+
+def get_schema_extensions(cls: type) -> list[type]:
+    """Return a fresh list of classes declared in ``cls.Schema.extensions``.
+
+    Returns ``[]`` when the schema has no inner ``Schema`` or no
+    ``extensions`` attribute. A copy is returned so callers may iterate
+    without risking mutation of the declaration.
+    """
+    schema = getattr(cls, "Schema", None)
+    if schema is None:
+        return []
+    exts = getattr(schema, "extensions", None)
+    if exts is None:
+        return []
+    return list(exts)
 
 
 def _clean_docstring(obj: type) -> str:
@@ -34,6 +69,24 @@ class BaseStructure(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     __ennoia_kind__: ClassVar[str] = "structural"
+
+    class Schema:
+        """Ennoia-level schema configuration, orthogonal to ``model_config``.
+
+        Subclasses override by declaring their own bare inner ``class Schema``
+        (no base needed). The framework reads attributes via ``getattr`` with
+        defaults; a user subclass that omits an attribute inherits the default
+        transparently even though Python does not merge inherited nested
+        classes.
+
+        - ``namespace``: when set, fields merge into the superschema under the
+          prefix ``{namespace}__``; otherwise fields merge flat.
+        - ``extensions``: the complete list of classes ``extend()`` may return.
+          Enforced at runtime — undeclared emissions raise ``SchemaError``.
+        """
+
+        namespace: ClassVar[str | None] = None
+        extensions: ClassVar[list[type]] = []
 
     @classmethod
     def extract_prompt(cls) -> str:
