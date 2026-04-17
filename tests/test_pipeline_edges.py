@@ -12,6 +12,7 @@ from ennoia import BaseSemantic, BaseStructure, Pipeline, Store
 from ennoia.adapters.embedding import EmbeddingAdapter
 from ennoia.adapters.llm import LLMAdapter
 from ennoia.store import HybridStore, InMemoryStructuredStore, InMemoryVectorStore
+from ennoia.store.base import VectorEntry
 
 
 class _Doc(BaseStructure):
@@ -106,7 +107,7 @@ def test_search_updates_score_when_second_hit_is_higher() -> None:
             self,
             source_id: str,
             data: dict[str, Any],
-            vectors: dict[str, list[float]],
+            entries: list[VectorEntry],
         ) -> None:
             raise AssertionError("unused")
 
@@ -178,7 +179,7 @@ def test_empty_semantic_answer_skips_vector_upsert() -> None:
 class _FakeHybridStore(HybridStore):
     def __init__(self) -> None:
         self._hits: list[tuple[str, float, dict[str, Any]]] = []
-        self.upserts: list[tuple[str, dict[str, Any], dict[str, list[float]]]] = []
+        self.upserts: list[tuple[str, dict[str, Any], list[VectorEntry]]] = []
 
     def set_hits(self, hits: list[tuple[str, float, dict[str, Any]]]) -> None:
         self._hits = hits
@@ -187,9 +188,9 @@ class _FakeHybridStore(HybridStore):
         self,
         source_id: str,
         data: dict[str, Any],
-        vectors: dict[str, list[float]],
+        entries: list[VectorEntry],
     ) -> None:
-        self.upserts.append((source_id, dict(data), {k: list(v) for k, v in vectors.items()}))
+        self.upserts.append((source_id, dict(data), list(entries)))
 
     async def hybrid_search(
         self,
@@ -235,8 +236,8 @@ def test_search_against_hybrid_store_skips_structured_get() -> None:
 
 def test_persist_to_hybrid_store_calls_upsert_once() -> None:
     # Stage 3: the HybridStore persistence path flattens structural fields
-    # and embeds semantic answers into a single ``upsert(source_id, data, vectors)``
-    # call, with ``vectors`` keyed by semantic index name.
+    # and builds a VectorEntry per semantic answer / collection entity into a
+    # single ``upsert(source_id, data, entries)`` call.
     store = _FakeHybridStore()
     pipeline = Pipeline(
         schemas=[_Doc, _Summary],
@@ -249,12 +250,13 @@ def test_persist_to_hybrid_store_calls_upsert_once() -> None:
     )
     pipeline.index(text="body", source_id="doc_1")
     assert len(store.upserts) == 1
-    source_id, data, vectors = store.upserts[0]
+    source_id, data, entries = store.upserts[0]
     assert source_id == "doc_1"
     assert data["cat"] == "legal"
-    # Semantic index name keys the vector dict — matches HybridStore.upsert ABC.
-    assert list(vectors.keys()) == ["_Summary"]
-    assert len(vectors["_Summary"]) > 0
+    # One VectorEntry per semantic answer, keyed by the schema class name.
+    assert [entry.index_name for entry in entries] == ["_Summary"]
+    assert len(entries[0].vector) > 0
+    assert entries[0].text == "a summary"
 
 
 def test_persist_to_hybrid_store_skips_vectors_when_semantic_empty() -> None:
@@ -270,8 +272,8 @@ def test_persist_to_hybrid_store_skips_vectors_when_semantic_empty() -> None:
     )
     pipeline.index(text="body", source_id="doc_1")
     assert len(store.upserts) == 1
-    _, _, vectors = store.upserts[0]
-    assert vectors == {}
+    _, _, entries = store.upserts[0]
+    assert entries == []
 
 
 # Ensure numpy is imported — the embedding path relies on it via cosine_search.

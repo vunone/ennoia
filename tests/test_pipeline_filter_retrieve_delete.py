@@ -119,7 +119,7 @@ class _HybridSpy(HybridStore):
         self,
         source_id: str,
         data: dict[str, Any],
-        vectors: dict[str, list[float]],
+        entries: list[Any],
     ) -> None:
         raise AssertionError("unused")
 

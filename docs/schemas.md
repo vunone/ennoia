@@ -44,6 +44,111 @@ class Holding(BaseSemantic):
     """What is the core legal holding of this case?"""
 ```
 
+## BaseCollection
+
+A `BaseCollection` extracts a **list** of structured entities the LLM
+finds in a document — parties to a contract, citations in a brief, every
+PII mention. Where `BaseSemantic` yields one free-text answer per document,
+`BaseCollection` yields N entities, each shaped by its own Pydantic fields
+and rendered to text via `template()` for embedding.
+
+```python
+from typing import Annotated
+from ennoia import BaseCollection, Field
+
+
+class ContractParty(BaseCollection):
+    """Extract every party mentioned in the contract."""
+
+    company_name: str
+    context: Annotated[str, Field(description="Short context this company is mentioned in")]
+    participation_year: int
+
+    def template(self) -> str:
+        return f"{self.company_name} ({self.participation_year}): {self.context}"
+```
+
+### How extraction works
+
+The pipeline asks the LLM for a wrapper object of the shape
+
+```json
+{
+  "entities_list": [ <entity>, <entity>, ... ],
+  "is_done": true
+}
+```
+
+and re-runs the call with a `<PreviouslyExtracted>` block listing what it
+already captured, until one of:
+
+- `is_done == true`,
+- `entities_list` is empty,
+- no new unique valid entity was added this iteration, or
+- `Schema.max_iterations` was reached (default: `None` — unbounded).
+
+Each extracted item is validated by Pydantic **and** by the subclass's
+`is_valid()`. Invalid items are dropped silently; the loop keeps going.
+
+### Customisable hooks
+
+| Method | Default | Why override |
+|---|---|---|
+| `extract_prompt()` | the docstring | almost never; the docstring *is* the prompt |
+| `template()` | `str(self.model_dump(mode="json"))` | produce a tight natural-language rendering for better retrieval |
+| `get_unique()` | a random token per call | return a deterministic key (e.g. a tuple-hash of selected fields) to dedup identical extractions |
+| `is_valid()` | no-op | raise `SkipItem` to drop just this entity; raise `RejectException` to drop the whole document |
+| `extend()` | `[]` | emit child schemas (structural, semantic, or collection) for downstream extraction — called once per extracted entity |
+
+### Schema config
+
+`Schema` is a plain inner class, same pattern as `BaseStructure`. All
+attributes are optional:
+
+- `extensions: list[type]` — classes `extend()` may return; undeclared
+  returns raise `SchemaError` at index time.
+- `max_iterations: int | None` — hard cap on iteration count.
+  `None` (default) trusts the other termination conditions.
+
+```python
+class ContractParty(BaseCollection):
+    """Extract every party."""
+
+    company_name: str
+    context: str
+
+    class Schema:
+        extensions = [FaangScorecard]
+        max_iterations = 20
+
+    def extend(self):
+        if self.company_name.lower() in {"meta", "google", "apple"}:
+            return [FaangScorecard]
+        return []
+```
+
+### Persistence
+
+Each extracted entity becomes one row in the vector store — keyed by
+`(source_id, schema_name, unique)` — with its `template()` text embedded
+as the vector. From storage's perspective a `BaseCollection` with N
+entities behaves identically to N `BaseSemantic` answers under the same
+index name. Structural fields of the entity are **not** persisted as
+tabular columns; they exist only to shape the prompt and the template
+output.
+
+`IndexResult.collections` exposes the typed instances. Per-entity
+confidences live in `IndexResult.collection_confidences`; the top-level
+`IndexResult.confidences[schema_name]` is the mean so one flat map
+continues to work for existing consumers.
+
+### SkipItem vs. RejectException
+
+- `SkipItem` (raised from `is_valid()`) drops just the offending entity;
+  the collection continues and the rest of the pipeline runs.
+- `RejectException` (raised anywhere — `is_valid`, `extend`, etc.) drops
+  the **whole document**: `IndexResult(rejected=True)`, nothing persisted.
+
 ## extend()
 
 `BaseStructure.extend()` runs after the instance is extracted and returns

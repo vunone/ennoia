@@ -130,6 +130,10 @@ class FakeAsyncQdrantClient:
             ]
             for pid in doomed:
                 store.pop(pid, None)
+        elif hasattr(selector, "must") or hasattr(selector, "must_not"):  # raw Filter
+            doomed = [pid for pid, rec in store.items() if _matches_filter(rec.payload, selector)]
+            for pid in doomed:
+                store.pop(pid, None)
 
 
 class _QueryResponse:

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ennoia.schema.base import BaseSemantic, BaseStructure
+from ennoia.schema.base import BaseCollection, BaseSemantic, BaseStructure
 from ennoia.schema.fields import Field
 
 __all__ = [
+    "BaseCollection",
     "BaseSemantic",
     "BaseStructure",
     "Field",
@@ -16,7 +17,7 @@ __all__ = [
 
 
 def describe(
-    schemas: list[type[BaseStructure] | type[BaseSemantic]],
+    schemas: list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]],
 ) -> dict[str, Any]:
     """Return the superschema discovery payload for ``schemas``.
 

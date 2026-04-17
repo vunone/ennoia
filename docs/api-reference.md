@@ -38,11 +38,15 @@ Generated from docstrings via
 
 ::: ennoia.RejectException
 
+::: ennoia.SkipItem
+
 ## Schemas
 
 ::: ennoia.BaseStructure
 
 ::: ennoia.BaseSemantic
+
+::: ennoia.BaseCollection
 
 ::: ennoia.Field
 

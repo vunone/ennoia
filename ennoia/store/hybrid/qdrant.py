@@ -2,17 +2,18 @@
 
 Per-point layout::
 
-    id:      UUIDv5 of ``source_id`` (stable across upserts of the same document)
-    vector:  dict[str, list[float]] — one named vector per Ennoia semantic index.
-             Set at collection-creation time from the first ``upsert`` call.
-    payload: the flattened structural record from the superschema, plus
-             ``source_id`` mirrored as a payload key for filter matches.
+    id:      UUIDv5 of ``{source_id}:{index_name}:{unique}`` (stable across re-indexes)
+    vector:  a single unnamed vector per point — one point per
+             :class:`~ennoia.store.base.VectorEntry` (``BaseSemantic`` answer or
+             ``BaseCollection`` entity), not one point per document.
+    payload: the full structural ``data`` (denormalized across the document's
+             points) plus ``source_id``, ``index_name``, ``unique``, ``text``.
 
-The single-point layout (one per ``source_id``, not one per (source_id, index))
-lets ``hybrid_search`` issue one native query for structured filter + vector
-similarity simultaneously. Hits carry a virtual per-index vector_id built from
-``{source_id}:{index}`` on the way out so the pipeline's ``SearchHit.semantic``
-dict is keyed consistently with the composite-store path.
+A document with a single ``BaseSemantic`` yields one point; a
+``BaseCollection`` with N entities yields N points sharing the same ``data``.
+``hybrid_search`` issues a single native query; the pipeline collapses
+multi-point hits to one :class:`~ennoia.index.result.SearchHit` per
+``source_id`` at the boundary.
 
 Requires the ``qdrant`` extra.
 """
@@ -22,9 +23,10 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from ennoia.store.base import HybridStore
+from ennoia.store.base import HybridStore, VectorEntry
 from ennoia.store.hybrid._qdrant_filter import translate_filter
 from ennoia.utils.filters import apply_filters
+from ennoia.utils.ids import make_semantic_vector_id
 from ennoia.utils.imports import require_module
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -60,7 +62,7 @@ class QdrantHybridStore(HybridStore):
                 self._client_ctor_kwargs["port"] = port
             if api_key is not None:
                 self._client_ctor_kwargs["api_key"] = api_key
-        self._ensured_named_vectors: tuple[str, ...] | None = None
+        self._collection_ensured = False
 
     async def _get_client(self) -> AsyncQdrantClient:
         client = self._client
@@ -70,70 +72,68 @@ class QdrantHybridStore(HybridStore):
             self._client = client
         return client
 
-    async def _ensure_collection(self, vectors: dict[str, list[float]]) -> None:
-        if self._ensured_named_vectors is not None:
+    async def _ensure_collection(self, sample_dim: int) -> None:
+        if self._collection_ensured:
             return
         models = require_module("qdrant_client.models", "qdrant")
         client = await self._get_client()
         existing = await client.collection_exists(self.collection)
         if not existing:
-            vectors_config = {
-                name: models.VectorParams(
-                    size=len(vec),
-                    distance=getattr(models.Distance, self._distance.upper()),
-                )
-                for name, vec in vectors.items()
-            }
             await client.create_collection(
                 collection_name=self.collection,
-                vectors_config=vectors_config,
+                vectors_config=models.VectorParams(
+                    size=sample_dim,
+                    distance=getattr(models.Distance, self._distance.upper()),
+                ),
             )
-        self._ensured_named_vectors = tuple(sorted(vectors.keys()))
+        self._collection_ensured = True
 
     async def upsert(
         self,
         source_id: str,
         data: dict[str, Any],
-        vectors: dict[str, list[float]],
+        entries: list[VectorEntry],
     ) -> None:
-        if not vectors:
-            # Qdrant requires a vector on each point; when there's no semantic
-            # content we can only persist the structured half by reading the
-            # named-vector spec from the collection and padding with zeros.
-            await self._upsert_structured_only(source_id, data)
-            return
-
-        await self._ensure_collection(vectors)
         models = require_module("qdrant_client.models", "qdrant")
         client = await self._get_client()
-        payload = {**data, "source_id": source_id}
-        await client.upsert(
-            collection_name=self.collection,
-            points=[
+
+        # Remove any prior points for this document so N → M cardinality
+        # changes (e.g., a collection shrinking on re-index) are correct.
+        if self._collection_ensured:
+            await client.delete(
+                collection_name=self.collection,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="source_id",
+                            match=models.MatchValue(value=source_id),
+                        )
+                    ]
+                ),
+            )
+
+        if not entries:
+            return
+
+        await self._ensure_collection(len(entries[0].vector))
+        points: list[Any] = []
+        for entry in entries:
+            payload: dict[str, Any] = {
+                **data,
+                "source_id": source_id,
+                "index_name": entry.index_name,
+                "text": entry.text,
+            }
+            if entry.unique is not None:
+                payload["unique"] = entry.unique
+            points.append(
                 models.PointStruct(
-                    id=_point_id(source_id),
-                    vector={name: list(vec) for name, vec in vectors.items()},
+                    id=_point_id(source_id, entry.index_name, entry.unique),
+                    vector=list(entry.vector),
                     payload=payload,
                 )
-            ],
-        )
-
-    async def _upsert_structured_only(self, source_id: str, data: dict[str, Any]) -> None:
-        # Only reachable once the collection exists — ``_ensure_collection``
-        # needs at least one vector sample to derive dimensions.
-        if self._ensured_named_vectors is None:
-            raise RuntimeError(
-                "QdrantHybridStore cannot upsert a document with no semantic vectors "
-                "before the collection's named-vector spec has been established. "
-                "Either provide at least one vector on the first upsert, or call "
-                "``set_payload`` directly."
             )
-        client = await self._get_client()
-        await client.set_payload(
-            collection_name=self.collection,
-            payload={**data, "source_id": source_id},
-            points=[_point_id(source_id)],
-        )
+        await client.upsert(collection_name=self.collection, points=points)
 
     async def hybrid_search(
         self,
@@ -143,44 +143,76 @@ class QdrantHybridStore(HybridStore):
         *,
         index: str | None = None,
     ) -> list[tuple[str, float, dict[str, Any]]]:
+        if not self._collection_ensured:
+            return []
+
+        models = require_module("qdrant_client.models", "qdrant")
         client = await self._get_client()
         qfilter, residual = translate_filter(filters, list_fields=self._list_fields)
-        using = index or (self._ensured_named_vectors[0] if self._ensured_named_vectors else None)
+
+        if index is not None:
+            index_cond = models.FieldCondition(
+                key="index_name",
+                match=models.MatchValue(value=index),
+            )
+            if qfilter is None:
+                qfilter = models.Filter(must=[index_cond])
+            else:
+                existing_must = list(qfilter.must or [])
+                qfilter = models.Filter(
+                    must=[*existing_must, index_cond],
+                    must_not=qfilter.must_not,
+                    should=qfilter.should,
+                )
+
         hits = await client.query_points(
             collection_name=self.collection,
             query=list(query_vector),
-            using=using,
             query_filter=qfilter,
             limit=top_k * 4 if residual else top_k,
             with_payload=True,
         )
-        rows = [_unwrap_hit(point, using) for point in hits.points]
+        rows = [_unwrap_hit(point) for point in hits.points]
         if residual:
-            # Post-filter the hit payloads in Python — correctness stays tied
-            # to the canonical :func:`apply_filters` evaluator.
             records = [(vid, meta) for vid, _, meta in rows]
             allowed = set(apply_filters(records, residual))
             rows = [r for r in rows if r[0] in allowed][:top_k]
         return rows[:top_k]
 
     async def get(self, source_id: str) -> dict[str, Any] | None:
+        if not self._collection_ensured:
+            return None
+        models = require_module("qdrant_client.models", "qdrant")
         client = await self._get_client()
-        records = await client.retrieve(
+        batch, _ = await client.scroll(
             collection_name=self.collection,
-            ids=[_point_id(source_id)],
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source_id",
+                        match=models.MatchValue(value=source_id),
+                    )
+                ]
+            ),
+            limit=1,
             with_payload=True,
             with_vectors=False,
         )
-        if not records:
+        if not batch:
             return None
-        payload = dict(records[0].payload or {})
-        payload.pop("source_id", None)
+        payload = dict(batch[0].payload or {})
+        # Strip row-level metadata so the return shape is the pure structural record.
+        for key in ("source_id", "index_name", "unique", "text"):
+            payload.pop(key, None)
         return payload
 
     async def filter(self, filters: dict[str, Any]) -> list[str]:
+        if not self._collection_ensured:
+            return []
         client = await self._get_client()
         qfilter, residual = translate_filter(filters, list_fields=self._list_fields)
-        ids: list[str] = []
+        seen: list[str] = []
+        seen_set: set[str] = set()
         next_offset: Any = None
         while True:
             batch, next_offset = await client.scroll(
@@ -188,56 +220,89 @@ class QdrantHybridStore(HybridStore):
                 scroll_filter=qfilter,
                 limit=512,
                 offset=next_offset,
-                with_payload=bool(residual),
+                with_payload=True,
                 with_vectors=False,
             )
             if residual:
                 records = [
                     (str(r.payload["source_id"]), dict(r.payload)) for r in batch if r.payload
                 ]
-                ids.extend(apply_filters(records, residual))
+                for sid in apply_filters(records, residual):
+                    if sid not in seen_set:
+                        seen.append(sid)
+                        seen_set.add(sid)
             else:
-                ids.extend(
-                    str(r.payload["source_id"])
-                    for r in batch
-                    if r.payload and "source_id" in r.payload
-                )
+                for r in batch:
+                    if r.payload and "source_id" in r.payload:  # pragma: no branch
+                        # All rows written by the adapter include source_id, so the
+                        # false arm is unreachable in practice — guard kept for
+                        # defence against foreign writers.
+                        sid = str(r.payload["source_id"])
+                        if sid not in seen_set:
+                            seen.append(sid)
+                            seen_set.add(sid)
             if next_offset is None:  # pragma: no branch — single-batch fake never paginates
                 break
-        return ids
+        return seen
 
     async def delete(self, source_id: str) -> bool:
+        if not self._collection_ensured:
+            return False
         models = require_module("qdrant_client.models", "qdrant")
         client = await self._get_client()
-        existing = await client.retrieve(
+        # Check for existence first so we can return the boolean contract honestly.
+        batch, _ = await client.scroll(
             collection_name=self.collection,
-            ids=[_point_id(source_id)],
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source_id",
+                        match=models.MatchValue(value=source_id),
+                    )
+                ]
+            ),
+            limit=1,
             with_payload=False,
             with_vectors=False,
         )
-        if not existing:
+        if not batch:
             return False
         await client.delete(
             collection_name=self.collection,
-            points_selector=models.PointIdsList(points=[_point_id(source_id)]),
+            points_selector=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source_id",
+                        match=models.MatchValue(value=source_id),
+                    )
+                ]
+            ),
         )
         return True
 
 
-def _point_id(source_id: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, source_id))
+def _point_id(source_id: str, index_name: str, unique: str | None) -> str:
+    """Stable UUIDv5 derived from the row's identity triple."""
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            make_semantic_vector_id(source_id, index_name, unique),
+        )
+    )
 
 
-def _unwrap_hit(point: Any, using: str | None) -> tuple[str, float, dict[str, Any]]:
+def _unwrap_hit(point: Any) -> tuple[str, float, dict[str, Any]]:
     payload = dict(point.payload or {})
     source_id = str(payload.get("source_id", point.id))
-    virtual_vector_id = f"{source_id}:{using}" if using else source_id
-    # Hydrate the metadata the pipeline expects: ``source_id`` + ``index``.
-    # ``text`` is not persisted in the hybrid payload (structural only), so the
-    # SearchHit's ``semantic`` dict will be empty for hybrid hits — callers
-    # interested in the actual text can retrieve() or use a separate vector store.
+    index_name = str(payload.get("index_name", ""))
+    unique = payload.get("unique")
+    virtual_vector_id = make_semantic_vector_id(
+        source_id,
+        index_name,
+        unique if isinstance(unique, str) else None,
+    )
     payload_out: dict[str, Any] = dict(payload)
-    payload_out.setdefault("source_id", source_id)
-    if using is not None:  # pragma: no branch — hybrid_search always resolves a using name
-        payload_out["index"] = using
+    payload_out["source_id"] = source_id
+    payload_out["index"] = index_name
+    payload_out["text"] = payload.get("text", "")
     return virtual_vector_id, float(point.score), payload_out

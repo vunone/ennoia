@@ -13,15 +13,22 @@ changing the Pipeline's call site.
 
 from __future__ import annotations
 
-from ennoia.schema.base import BaseSemantic, BaseStructure
+from ennoia.schema.base import BaseCollection, BaseSemantic, BaseStructure
 
 __all__ = ["build_dag", "validate_schemas"]
 
 
 def validate_schemas(schemas: list[type]) -> None:
     for schema in schemas:
-        if not (issubclass(schema, BaseStructure) or issubclass(schema, BaseSemantic)):
-            raise TypeError(f"{schema.__name__} must inherit from BaseStructure or BaseSemantic.")
+        if not (
+            issubclass(schema, BaseStructure)
+            or issubclass(schema, BaseSemantic)
+            or issubclass(schema, BaseCollection)
+        ):
+            raise TypeError(
+                f"{schema.__name__} must inherit from BaseStructure, BaseSemantic, "
+                "or BaseCollection."
+            )
 
 
 def build_dag(schemas: list[type]) -> list[list[type]]:

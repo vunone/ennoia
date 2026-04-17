@@ -2,12 +2,18 @@
 
 from ennoia.events import Emitter, ExtractionEvent, IndexEvent, SearchEvent
 from ennoia.index import Pipeline
-from ennoia.index.exceptions import ExtractionError, FilterValidationError, RejectException
+from ennoia.index.exceptions import (
+    ExtractionError,
+    FilterValidationError,
+    RejectException,
+    SkipItem,
+)
 from ennoia.index.result import IndexResult, SearchHit, SearchResult
-from ennoia.schema import BaseSemantic, BaseStructure, Field, describe
+from ennoia.schema import BaseCollection, BaseSemantic, BaseStructure, Field, describe
 from ennoia.store import Store
 
 __all__ = [
+    "BaseCollection",
     "BaseSemantic",
     "BaseStructure",
     "Emitter",
@@ -22,6 +28,7 @@ __all__ = [
     "SearchEvent",
     "SearchHit",
     "SearchResult",
+    "SkipItem",
     "Store",
     "describe",
 ]

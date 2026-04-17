@@ -30,6 +30,9 @@ env/
 *.npy
 /.ennoia/
 
+# Benchmark caches (HF dataset, large; sample.json + results stay tracked)
+/benchmark/data/cache/
+
 # Internal working directory (specs shared between maintainers and tooling; not public).
 .ref/
 .claude/

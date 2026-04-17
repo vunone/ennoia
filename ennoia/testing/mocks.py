@@ -17,12 +17,14 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from ennoia.adapters.embedding.base import EmbeddingAdapter
 from ennoia.adapters.llm.base import LLMAdapter
-from ennoia.store.base import HybridStore
+from ennoia.store.base import HybridStore, VectorEntry
 from ennoia.utils.filters import apply_filters
+from ennoia.utils.ids import make_semantic_vector_id
 
 __all__ = ["MockEmbeddingAdapter", "MockLLMAdapter", "MockStore"]
 
@@ -113,27 +115,57 @@ class MockEmbeddingAdapter(EmbeddingAdapter):
         return [v / norm for v in values]
 
 
-class MockStore(HybridStore):
-    """In-memory :class:`HybridStore` implementation for user test suites.
+@dataclass
+class _Row:
+    """One denormalized row in :class:`MockStore`.
 
-    Stores the flattened structural record + a dict of named vectors per
-    ``source_id``, answers filters via the canonical
-    :func:`ennoia.utils.filters.apply_filters`, and scores search hits with
-    cosine similarity.
+    The ``data`` payload is identical across all rows sharing a ``source_id``;
+    the store writes it once per row to mirror what real hybrid backends do on
+    disk.
+    """
+
+    vector_id: str
+    source_id: str
+    index_name: str
+    unique: str | None
+    text: str
+    data: dict[str, Any]
+    vector: list[float]
+
+
+class MockStore(HybridStore):
+    """In-memory :class:`HybridStore` with row-per-entry semantics.
+
+    A document with one ``BaseSemantic`` yields one row; a ``BaseCollection``
+    with N entities yields N rows sharing the same ``data``. The filter evaluator
+    matches rows individually and the pipeline dedups by ``source_id`` at the
+    search boundary.
     """
 
     def __init__(self) -> None:
-        self._records: dict[str, dict[str, Any]] = {}
-        self._vectors: dict[str, dict[str, list[float]]] = {}
+        self._rows: dict[str, _Row] = {}
 
     async def upsert(
         self,
         source_id: str,
         data: dict[str, Any],
-        vectors: dict[str, list[float]],
+        entries: list[VectorEntry],
     ) -> None:
-        self._records[source_id] = dict(data)
-        self._vectors[source_id] = {k: list(v) for k, v in vectors.items()}
+        # Replace-by-source semantics: any existing rows for this document are
+        # dropped before the new ones land. A doc previously indexed with 5
+        # collection entries and now re-indexed with 3 correctly shrinks to 3.
+        self._rows = {vid: row for vid, row in self._rows.items() if row.source_id != source_id}
+        for entry in entries:
+            vector_id = make_semantic_vector_id(source_id, entry.index_name, entry.unique)
+            self._rows[vector_id] = _Row(
+                vector_id=vector_id,
+                source_id=source_id,
+                index_name=entry.index_name,
+                unique=entry.unique,
+                text=entry.text,
+                data=dict(data),
+                vector=list(entry.vector),
+            )
 
     async def hybrid_search(
         self,
@@ -143,35 +175,63 @@ class MockStore(HybridStore):
         *,
         index: str | None = None,
     ) -> list[tuple[str, float, dict[str, Any]]]:
-        candidate_ids = apply_filters(self._records.items(), filters or {})
+        allowed_ids = set(
+            apply_filters(
+                ((row.vector_id, row.data) for row in self._rows.values()),
+                filters or {},
+            )
+        )
         scored: list[tuple[str, float, dict[str, Any]]] = []
-        for source_id in candidate_ids:
-            named = self._vectors.get(source_id, {})
-            pool = {index: named[index]} if index and index in named else named
-            for name, vec in pool.items():
-                score = _cosine(query_vector, vec)
-                if score is None:
-                    continue
-                meta = {
-                    **self._records.get(source_id, {}),
-                    "source_id": source_id,
-                    "index": name,
-                }
-                scored.append((f"{source_id}:{name}", score, meta))
+        for row in self._rows.values():
+            if row.vector_id not in allowed_ids:
+                continue
+            if index is not None and row.index_name != index:
+                continue
+            score = _cosine(query_vector, row.vector)
+            if score is None:
+                continue
+            meta = {
+                **row.data,
+                "source_id": row.source_id,
+                "index": row.index_name,
+                "text": row.text,
+            }
+            if row.unique is not None:
+                meta["unique"] = row.unique
+            scored.append((row.vector_id, score, meta))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:top_k]
 
     async def get(self, source_id: str) -> dict[str, Any] | None:
-        record = self._records.get(source_id)
-        return dict(record) if record is not None else None
+        for row in self._rows.values():
+            if row.source_id == source_id:
+                return dict(row.data)
+        return None
 
     async def filter(self, filters: dict[str, Any]) -> list[str]:
-        return apply_filters(self._records.items(), filters or {})
+        allowed_vector_ids = set(
+            apply_filters(
+                ((row.vector_id, row.data) for row in self._rows.values()),
+                filters or {},
+            )
+        )
+        # Preserve first-seen-row order per source_id so results are
+        # deterministic across runs while still being distinct.
+        seen: list[str] = []
+        seen_set: set[str] = set()
+        for row in self._rows.values():
+            if row.vector_id not in allowed_vector_ids:
+                continue
+            if row.source_id in seen_set:
+                continue
+            seen.append(row.source_id)
+            seen_set.add(row.source_id)
+        return seen
 
     async def delete(self, source_id: str) -> bool:
-        removed = self._records.pop(source_id, None) is not None
-        self._vectors.pop(source_id, None)
-        return removed
+        before = len(self._rows)
+        self._rows = {vid: row for vid, row in self._rows.items() if row.source_id != source_id}
+        return len(self._rows) < before
 
 
 def _cosine(a: list[float], b: list[float]) -> float | None:

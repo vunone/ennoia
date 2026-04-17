@@ -33,6 +33,7 @@ Available extras: `ollama`, `openai`, `anthropic`, `sentence-transformers`,
 `pgvector` (PostgreSQL + pgvector hybrid store),
 `server` (FastAPI REST + FastMCP),
 `docs` (mkdocs-material site),
+`benchmark` (CUAD comparison harness — see [benchmark/README.md](benchmark/README.md)),
 `all` (everything above).
 
 ## Quick start (SDK)
@@ -63,10 +64,25 @@ class Summary(BaseSemantic):
     """What is the main topic of this document?"""
 
 
+# DDI Schema #3 — collection extraction. The LLM iterates until it has
+# captured every entity; each entity is embedded as its own searchable row.
+from ennoia import BaseCollection
+
+
+class Party(BaseCollection):
+    """Extract every party mentioned in the document."""
+
+    company_name: str
+    participation_year: int
+
+    def template(self) -> str:
+        return f"{self.company_name} ({self.participation_year})"
+
+
 # Configure the pipeline: schemas + a two-phase store (structured filter
 # → vector search) + LLM and embedding adapters.
 pipeline = Pipeline(
-    schemas=[DocMeta, Summary],
+    schemas=[DocMeta, Summary, Party],
     store=Store(vector=InMemoryVectorStore(), structured=InMemoryStructuredStore()),
     llm=OllamaAdapter(model="qwen3:0.6b"),
     embedding=SentenceTransformerEmbedding(model="all-MiniLM-L6-v2"),
@@ -141,6 +157,18 @@ ennoia mcp --store qdrant:cases --schema my_schemas.py --transport sse --port 80
 
 Agents consume the MCP flow `discover_schema → filter → search(filter_ids=...) → retrieve`
 out of the box. See [docs/serve.md](https://github.com/vunone/ennoia/blob/main/docs/serve.md).
+
+## Benchmarks
+
+A reproducible CUAD legal-QA benchmark pits ennoia DDI+RAG against a textbook
+langchain shred-embed RAG baseline using identical models (`gpt-5.4-nano` for
+generation, `text-embedding-3-small` for embeddings, `gpt-5.4` as judge):
+
+![CUAD benchmark](benchmark/results/chart_latest.png)
+
+See [benchmark/README.md](benchmark/README.md) for methodology, the one-command
+reproduction, and the cookbook walkthrough at
+[docs/cookbook/cuad-benchmark.md](https://github.com/vunone/ennoia/blob/main/docs/cookbook/cuad-benchmark.md).
 
 ## Documentation
 

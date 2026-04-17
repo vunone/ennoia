@@ -32,6 +32,23 @@ pytest                 # tests
 `ruff` and `pyright` are non-negotiable; unexplained `# pyright: ignore`
 or `# noqa` comments are not accepted.
 
+### Coverage
+
+CI enforces 100% branch coverage. Run it locally with:
+
+```bash
+coverage run --branch --source=ennoia -m pytest
+coverage report --fail-under=100
+```
+
+Do **not** use `pytest --cov` for the final check — it reports ~85%.
+Ennoia registers `ennoia.testing.fixtures` as a `pytest11` entry-point
+plugin so downstream consumers of `ennoia[dev]` get the mock fixtures
+auto-loaded. pytest imports that plugin during startup, *before*
+pytest-cov installs its tracer, so module-level statements in the
+transitively-imported ennoia modules escape tracing. `coverage run -m
+pytest` starts the tracer first and sees everything.
+
 ## Testing conventions
 
 - Every new module ships with a test module under `tests/`.

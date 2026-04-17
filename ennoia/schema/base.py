@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
@@ -9,9 +10,11 @@ from pydantic import BaseModel, ConfigDict
 from ennoia.schema.operators import describe_field
 
 __all__ = [
+    "BaseCollection",
     "BaseSemantic",
     "BaseStructure",
     "get_schema_extensions",
+    "get_schema_max_iterations",
     "get_schema_namespace",
 ]
 
@@ -44,6 +47,31 @@ def get_schema_extensions(cls: type) -> list[type]:
     if exts is None:
         return []
     return list(exts)
+
+
+def get_schema_max_iterations(cls: type) -> int | None:
+    """Return ``cls.Schema.max_iterations`` or ``None`` when unset.
+
+    Only meaningful for :class:`BaseCollection` subclasses; structural and
+    semantic schemas do not iterate. The helper tolerates missing attributes
+    so the inner ``Schema`` can stay a bare class without forcing users to
+    spell out every knob.
+    """
+    schema = getattr(cls, "Schema", None)
+    if schema is None:
+        return None
+    value = getattr(schema, "max_iterations", None)
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        raise TypeError(
+            f"{cls.__name__}.Schema.max_iterations must be int or None, got {type(value).__name__}."
+        )
+    if value < 1:
+        raise ValueError(
+            f"{cls.__name__}.Schema.max_iterations must be >= 1 (or None), got {value}."
+        )
+    return value
 
 
 def _clean_docstring(obj: type) -> str:
@@ -109,14 +137,14 @@ class BaseStructure(BaseModel):
                 fields.append(record)
         return {"name": cls.__name__, "fields": fields}
 
-    def extend(self) -> list[type[BaseStructure] | type[BaseSemantic]]:
+    def extend(self) -> list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]]:
         """Return additional schemas to apply after this one is extracted.
 
         The pipeline calls ``extend()`` on the populated instance and queues
-        the returned schemas (structural or semantic) for further extraction
-        against the same document. The parent instance's extracted values —
-        including ``_confidence`` — are available via ``self``. This is the
-        sole mechanism for inter-schema dependencies.
+        the returned schemas (structural, semantic, or collection) for further
+        extraction against the same document. The parent instance's extracted
+        values — including ``_confidence`` — are available via ``self``. This
+        is the sole mechanism for inter-schema dependencies.
 
         Default: no extension.
         """
@@ -136,3 +164,82 @@ class BaseSemantic:
     @classmethod
     def extract_prompt(cls) -> str:
         return _clean_docstring(cls)
+
+
+class BaseCollection(BaseModel):
+    """Base class for iterative list extraction.
+
+    A collection schema declares the shape of **one** entity the LLM should
+    extract; the pipeline repeatedly asks for more until the model signals
+    completion (``is_done``) or a guardrail trips (see
+    :attr:`Schema.max_iterations`). Each extracted entity is turned into an
+    embeddable string by :meth:`template` and stored as a semantic entry —
+    from storage's perspective, a collection with N entities behaves like N
+    :class:`BaseSemantic` answers under the same index name.
+
+    The per-entity fields drive prompt shape and :meth:`template` output; they
+    are **not** persisted as tabular columns in the structured store.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    __ennoia_kind__: ClassVar[str] = "collection"
+
+    class Schema:
+        """Ennoia-level configuration, orthogonal to ``model_config``.
+
+        - ``extensions``: classes ``extend()`` may return (structural, semantic,
+          or other collections). Enforced at runtime.
+        - ``max_iterations``: cap on iteration count. ``None`` means unbounded;
+          the loop then relies on ``is_done``, empty ``entities_list``, or
+          no-new-unique-items for termination.
+        - ``namespace``: present for parity with :class:`BaseStructure`, but has
+          no persistence effect — collections don't contribute tabular fields.
+        """
+
+        namespace: ClassVar[str | None] = None
+        extensions: ClassVar[list[type]] = []
+        max_iterations: ClassVar[int | None] = None
+
+    @classmethod
+    def extract_prompt(cls) -> str:
+        return _clean_docstring(cls)
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        return cls.model_json_schema()
+
+    def is_valid(self) -> None:
+        """Validate this entity. Raise :class:`SkipItem` to drop just this one.
+
+        Raise :class:`RejectException` to drop the entire document. Default
+        implementation does nothing, so the entity is always accepted.
+        """
+        return None
+
+    def get_unique(self) -> str:
+        """Return a dedup key for this entity.
+
+        Default: a fresh random token, which means two identical extractions
+        are both kept. Override to return a deterministic key (e.g., a hash of
+        chosen fields) when duplicates should be collapsed. The key is not
+        included in the prompt; it is only used by the loop to detect repeats.
+        """
+        return secrets.token_hex(16)
+
+    def template(self) -> str:
+        """Return the embeddable string representation of this entity.
+
+        Default: the JSON dump of the model. Override to produce a tighter
+        natural-language rendering for better retrieval (e.g.,
+        ``f"{self.name} ({self.year}): {self.context}"``).
+        """
+        return str(self.model_dump(mode="json"))
+
+    def extend(self) -> list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]]:
+        """Return additional schemas to apply after this entity is extracted.
+
+        Called once per *entity* (not once per collection). Returned classes
+        must be declared in :attr:`Schema.extensions`. Default: no extension.
+        """
+        return []

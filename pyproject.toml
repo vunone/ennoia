@@ -48,8 +48,19 @@ docs = [
     "mkdocstrings[python]>=0.26",
     "mike>=2.1",
 ]
+benchmark = [
+    "ennoia[openai]",
+    "datasets>=2.20,<4",
+    "langchain>=0.3,<0.4",
+    "langchain-openai>=0.2,<0.3",
+    "langchain-community>=0.3,<0.4",
+    "langchain-text-splitters>=0.3,<0.4",
+    "matplotlib>=3.9",
+    "tiktoken>=0.7",
+    "tqdm>=4.66",
+]
 all = [
-    "ennoia[ollama,openai,anthropic,sentence-transformers,filesystem,cli,qdrant,pgvector,server]",
+    "ennoia[ollama,openai,anthropic,sentence-transformers,filesystem,cli,qdrant,pgvector,server,benchmark]",
 ]
 dev = [
     "pytest>=8",
@@ -94,6 +105,8 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # Tests exercise typing aliases, intentionally verbose rows, and need to
 # assert on generic exceptions from fastmcp-wrapped tool errors.
 "tests/*" = ["UP007", "UP045", "B017", "F401"]
+# Benchmark scripts contain long prompt strings and research-style code.
+"benchmark/**" = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -106,7 +119,7 @@ testpaths = ["tests"]
 
 [tool.pyright]
 include = ["ennoia"]
-exclude = ["**/.venv", "**/__pycache__", "**/node_modules"]
+exclude = ["**/.venv", "**/__pycache__", "**/node_modules", "benchmark"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"
@@ -115,6 +128,7 @@ reportMissingTypeStubs = false
 [tool.coverage.run]
 branch = true
 source = ["ennoia"]
+omit = ["benchmark/*"]
 
 [tool.coverage.report]
 show_missing = true

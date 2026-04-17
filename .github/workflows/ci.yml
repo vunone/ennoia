@@ -44,7 +44,14 @@ jobs:
         run: pyright
 
       - name: Run tests
-        run: pytest --cov --cov-branch --cov-report=xml
+        # ``coverage run -m pytest`` (instead of ``pytest --cov``) starts
+        # coverage *before* pytest loads plugins, so the ``ennoia.testing``
+        # pytest11 entry point's import-time code is traced. ``pytest --cov``
+        # misses those lines and drops the total from 100% to ~85%.
+        run: |
+          coverage run --branch --source=ennoia -m pytest
+          coverage report --fail-under=100
+          coverage xml
 
       - name: Upload results to Codecov
         if: matrix.python-version == '3.12'

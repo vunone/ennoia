@@ -129,7 +129,7 @@ async def test_hybrid_store_default_filter_and_delete_raise() -> None:
             self,
             source_id: str,
             data: dict[str, Any],
-            vectors: dict[str, list[float]],
+            entries: list[Any],
         ) -> None: ...
         async def hybrid_search(
             self,

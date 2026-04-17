@@ -26,9 +26,16 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["HybridStore", "StructuredStore", "VectorStore", "validate_collection_name"]
+__all__ = [
+    "HybridStore",
+    "StructuredStore",
+    "VectorEntry",
+    "VectorStore",
+    "validate_collection_name",
+]
 
 
 _COLLECTION_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -50,6 +57,22 @@ def validate_collection_name(name: str) -> str:
             f"digits, underscores; leading non-digit), got {name!r}"
         )
     return name
+
+
+@dataclass(frozen=True)
+class VectorEntry:
+    """One vector row to write: a (text, vector) pair tagged with its index.
+
+    A ``BaseSemantic`` schema produces one entry per document with ``unique=None``.
+    A ``BaseCollection`` produces N entries per document sharing an ``index_name``,
+    each with its own ``unique`` dedup key returned by ``get_unique()``. Stores
+    treat the ``(source_id, index_name, unique)`` triple as the row identity.
+    """
+
+    index_name: str
+    vector: list[float]
+    text: str
+    unique: str | None = None
 
 
 class StructuredStore(ABC):
@@ -107,14 +130,22 @@ class VectorStore(ABC):
 
 
 class HybridStore(ABC):
-    """A single backend that natively does both structured filter and vector search."""
+    """A single backend that natively does both structured filter and vector search.
+
+    Storage model: one row per :class:`VectorEntry`, with the document's
+    structural ``data`` **denormalized (copied)** onto every row. A document
+    with a single ``BaseSemantic`` answer is one row; a ``BaseCollection`` with
+    N entities produces N rows sharing the same ``data`` payload. Row identity
+    is the triple ``(source_id, index_name, unique)``. The pipeline collapses
+    multi-row hits to one per ``source_id`` at search time.
+    """
 
     @abstractmethod
     async def upsert(
         self,
         source_id: str,
         data: dict[str, Any],
-        vectors: dict[str, list[float]],
+        entries: list[VectorEntry],
     ) -> None: ...
 
     @abstractmethod
@@ -139,5 +170,5 @@ class HybridStore(ABC):
         raise NotImplementedError(f"{type(self).__name__} must override filter(filters)")
 
     async def delete(self, source_id: str) -> bool:
-        """Remove ``source_id``'s record (both structural and vectors)."""
+        """Remove every row with the given ``source_id`` (structural + vectors)."""
         raise NotImplementedError(f"{type(self).__name__} must override delete(source_id)")
