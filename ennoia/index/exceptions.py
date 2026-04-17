@@ -10,6 +10,7 @@ __all__ = [
     "RejectException",
     "SchemaError",
     "SchemaWarning",
+    "SkipItem",
 ]
 
 
@@ -23,6 +24,16 @@ class RejectException(Exception):
     The pipeline catches this, returns an `IndexResult(rejected=True)`,
     and writes nothing to the stores. Intended for schema validators or
     `extend()` logic that detects an out-of-scope document.
+    """
+
+
+class SkipItem(Exception):
+    """Raise from ``BaseCollection.is_valid`` to drop a single extracted entity.
+
+    Unlike :class:`RejectException` (which drops the whole document), this
+    only discards the entity it is raised from; the collection loop continues
+    and the rest of the pipeline proceeds. Caught exclusively by the collection
+    extractor.
     """
 
 

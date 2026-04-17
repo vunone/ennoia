@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ennoia.index.extractor import CONFIDENCE_KEY
-from ennoia.schema.base import BaseStructure
+from ennoia.schema.base import BaseCollection, BaseStructure
 
 __all__ = ["IndexResult", "SearchHit", "SearchResult"]
 
@@ -17,7 +17,11 @@ class IndexResult:
     source_id: str
     structural: dict[str, BaseStructure] = field(default_factory=dict[str, BaseStructure])
     semantic: dict[str, str] = field(default_factory=dict[str, str])
+    collections: dict[str, list[BaseCollection]] = field(
+        default_factory=dict[str, list[BaseCollection]]
+    )
     confidences: dict[str, float] = field(default_factory=dict[str, float])
+    collection_confidences: dict[str, list[float]] = field(default_factory=dict[str, list[float]])
     rejected: bool = False
 
     def summary(self) -> dict[str, Any]:
@@ -34,7 +38,17 @@ class IndexResult:
                 name: (text[:120] + "..." if len(text) > 120 else text)
                 for name, text in self.semantic.items()
             },
+            "collections": {
+                name: [
+                    {k: v for k, v in entity.model_dump(mode="json").items() if k != CONFIDENCE_KEY}
+                    for entity in entities
+                ]
+                for name, entities in self.collections.items()
+            },
             "confidences": dict(self.confidences),
+            "collection_confidences": {
+                name: list(values) for name, values in self.collection_confidences.items()
+            },
         }
         return out
 

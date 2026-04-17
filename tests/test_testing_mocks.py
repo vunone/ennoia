@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from ennoia.store.base import VectorEntry
 from ennoia.testing import MockEmbeddingAdapter, MockLLMAdapter, MockStore
 
 # ---------------------------------------------------------------------------
@@ -135,10 +136,28 @@ async def test_mock_embedding_zero_vector_when_bytes_collapse() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _entries(*specs: tuple[str, list[float], str, str | None]) -> list[VectorEntry]:
+    return [
+        VectorEntry(index_name=name, vector=vec, text=text, unique=unique)
+        for name, vec, text, unique in specs
+    ]
+
+
 async def test_mock_store_upsert_filter_search_retrieve_delete() -> None:
     store = MockStore()
-    await store.upsert("doc_1", {"cat": "legal"}, {"H": [1.0, 0.0], "F": [0.0, 1.0]})
-    await store.upsert("doc_2", {"cat": "medical"}, {"H": [0.9, 0.1]})
+    await store.upsert(
+        "doc_1",
+        {"cat": "legal"},
+        _entries(
+            ("H", [1.0, 0.0], "h-text", None),
+            ("F", [0.0, 1.0], "f-text", None),
+        ),
+    )
+    await store.upsert(
+        "doc_2",
+        {"cat": "medical"},
+        _entries(("H", [0.9, 0.1], "h-text", None)),
+    )
 
     # filter
     assert await store.filter({"cat": "legal"}) == ["doc_1"]
@@ -148,7 +167,8 @@ async def test_mock_store_upsert_filter_search_retrieve_delete() -> None:
     # hybrid_search — cosine ranks doc_1's H=1,0 above doc_2's H=0.9,0.1 for query 1,0
     hits = await store.hybrid_search({"cat": "legal"}, [1.0, 0.0], top_k=5)
     assert hits[0][2]["source_id"] == "doc_1"
-    # index-scoped hybrid search: only the "H" vector of doc_1 competes
+    assert hits[0][2]["text"] == "h-text"
+    # index-scoped hybrid search: only the "F" entry of doc_1 competes
     scoped = await store.hybrid_search({"cat": "legal"}, [0.0, 1.0], top_k=5, index="F")
     assert scoped[0][2]["index"] == "F"
     # delete
@@ -157,28 +177,76 @@ async def test_mock_store_upsert_filter_search_retrieve_delete() -> None:
     assert await store.get("doc_1") is None
 
 
+async def test_mock_store_collection_entries_yield_one_row_each() -> None:
+    store = MockStore()
+    await store.upsert(
+        "doc_1",
+        {"cat": "legal"},
+        _entries(
+            ("Parties", [1.0, 0.0], "Alice", "a"),
+            ("Parties", [0.0, 1.0], "Bob", "b"),
+            ("Parties", [0.5, 0.5], "Carol", "c"),
+        ),
+    )
+    # Three rows, all under the same source_id + index_name but different unique keys.
+    assert len(store._rows) == 3
+    # filter returns the single distinct source_id.
+    assert await store.filter({"cat": "legal"}) == ["doc_1"]
+
+
+async def test_mock_store_reindex_drops_stale_entries() -> None:
+    store = MockStore()
+    await store.upsert(
+        "doc_1",
+        {"cat": "legal"},
+        _entries(
+            ("Parties", [1.0, 0.0], "Alice", "a"),
+            ("Parties", [0.0, 1.0], "Bob", "b"),
+        ),
+    )
+    await store.upsert(
+        "doc_1",
+        {"cat": "legal"},
+        _entries(("Parties", [1.0, 0.0], "Alice", "a")),
+    )
+    # Stale "Bob" row must be gone.
+    assert len(store._rows) == 1
+
+
 async def test_mock_store_search_skips_zero_norm_vectors() -> None:
     store = MockStore()
-    await store.upsert("doc_1", {"cat": "legal"}, {"H": [0.0, 0.0]})
+    await store.upsert(
+        "doc_1",
+        {"cat": "legal"},
+        _entries(("H", [0.0, 0.0], "h", None)),
+    )
     hits = await store.hybrid_search({"cat": "legal"}, [1.0, 0.0], top_k=5)
     assert hits == []
 
 
 async def test_mock_store_search_skips_dim_mismatch() -> None:
     store = MockStore()
-    await store.upsert("doc_1", {"cat": "legal"}, {"H": [1.0]})  # dim 1
+    await store.upsert(
+        "doc_1",
+        {"cat": "legal"},
+        _entries(("H", [1.0], "h", None)),  # dim 1
+    )
     hits = await store.hybrid_search({"cat": "legal"}, [1.0, 0.0], top_k=5)  # query dim 2
     assert hits == []
 
 
-async def test_mock_store_search_skips_empty_vectors() -> None:
+async def test_mock_store_search_skips_empty_rows() -> None:
     store = MockStore()
-    # No vectors stored — apply_filters returns the id, but pool is empty.
-    await store.upsert("doc_1", {"cat": "legal"}, {})
+    # No entries stored — the document exists only conceptually; nothing to rank.
+    await store.upsert("doc_1", {"cat": "legal"}, [])
     assert await store.hybrid_search({"cat": "legal"}, [1.0, 0.0], top_k=5) == []
 
 
 async def test_mock_store_empty_query_vector_returns_empty() -> None:
     store = MockStore()
-    await store.upsert("doc_1", {"cat": "legal"}, {"H": [1.0, 0.0]})
+    await store.upsert(
+        "doc_1",
+        {"cat": "legal"},
+        _entries(("H", [1.0, 0.0], "h", None)),
+    )
     assert await store.hybrid_search({"cat": "legal"}, [], top_k=5) == []

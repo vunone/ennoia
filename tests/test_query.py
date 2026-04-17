@@ -77,7 +77,7 @@ class _FakeHybrid(HybridStore):
         self,
         source_id: str,
         data: dict[str, Any],
-        vectors: dict[str, list[float]],
+        entries: list[Any],
     ) -> None:
         pytest.fail("upsert should not be called from plan_search")
 

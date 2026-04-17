@@ -69,7 +69,11 @@ def test_describe_schema_matches_filter_specs_reference() -> None:
     assert "is_null" in by_name["overruled_by"]["operators"]
 
     assert payload["semantic_indices"] == [
-        {"name": "Holding", "description": "What is the core holding of this case?"}
+        {
+            "name": "Holding",
+            "description": "What is the core holding of this case?",
+            "kind": "semantic",
+        }
     ]
 
 

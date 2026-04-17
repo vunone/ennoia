@@ -5,6 +5,56 @@ All notable changes to Ennoia are documented here. The format is based on
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v0.1.0 onward.
 
+## Unreleased
+
+### Added
+
+- **`BaseCollection`** — third extraction kind alongside `BaseStructure`
+  and `BaseSemantic`. Extracts a *list* of structured entities from a
+  document by iteratively prompting the LLM with a `<PreviouslyExtracted>`
+  block until `is_done`, an empty result, no-new-uniques, or
+  `Schema.max_iterations` stops the loop. Each entity renders to text via
+  `template()` and lands in the vector store as its own row, so a
+  collection with N entities behaves like N `BaseSemantic` answers under
+  the same index name. New hooks: `is_valid()` (raise `SkipItem` to drop
+  just the entity; `RejectException` still drops the whole document),
+  `get_unique()` (dedup key, random by default), `template()`,
+  `extend()` per entity.
+- **`SkipItem` exception** — new per-entity skip signal for
+  `BaseCollection.is_valid()`.
+- **`benchmark/` directory** — CUAD-based comparison harness pitting
+  ennoia DDI+RAG against a textbook langchain shred-embed RAG baseline.
+  Produces a grouped bar chart (recall@k + LLM-as-judge verdict shares)
+  saved to `benchmark/results/chart_latest.png`. Not shipped in the
+  published wheel; excluded from pyright `include` and coverage `source`.
+- **`benchmark` extra** — `pip install -e ".[benchmark]"` pulls in
+  `datasets`, `langchain`, `langchain-openai`, `langchain-community`,
+  `langchain-text-splitters`, `matplotlib`, `tiktoken`, `tqdm`. Folded
+  into `[all]`.
+
+### Changed
+
+- **BREAKING — `HybridStore.upsert` signature.** Replaces
+  `vectors: dict[str, list[float]]` with `entries: list[VectorEntry]`,
+  where `VectorEntry` captures `(index_name, vector, text, unique)`. The
+  storage model flips from one-row-per-document-with-many-named-vectors
+  to **one row per vector entry, with the structural fields denormalized
+  across the document's rows**. This unifies how `BaseSemantic` and
+  `BaseCollection` land in a hybrid backend: each row carries a single
+  vector + its index name + its text, and a single native query can
+  filter on structural fields and rank by vector similarity at once. The
+  pipeline collapses multi-row hits to one per `source_id` at search
+  time. Affected backends: `PgVectorHybridStore` (table schema change:
+  composite rows keyed by `vector_id`), `QdrantHybridStore` (one point
+  per entry with a single unnamed vector), `MockStore` (row-per-entry
+  in-memory model). Third-party `HybridStore` subclasses must be updated.
+- **`semantic_indices` discovery payload** now includes a `kind` field
+  (`"semantic"` or `"collection"`) per entry so agents can distinguish
+  one-answer-per-doc indices from many-entries-per-doc indices.
+- **`parse_semantic_vector_id`** now returns a 3-tuple
+  `(source_id, index_name, unique | None)` to parse the new 3-part form
+  emitted for collection entries.
+
 ## [0.3.0] — 2026-04-16
 
 Production interfaces (REST, MCP), full hybrid-store adapter set

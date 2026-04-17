@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ennoia.index.exceptions import SchemaError
 from ennoia.schema.base import (
+    BaseCollection,
     BaseSemantic,
     BaseStructure,
     get_schema_extensions,
@@ -37,7 +38,7 @@ class ManifestNode:
     root, used by the merging layer to tie-break description conflicts.
     """
 
-    cls: type[BaseStructure] | type[BaseSemantic]
+    cls: type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]
     namespace: str | None
     depth: int
 
@@ -46,14 +47,21 @@ class ManifestNode:
 class SchemaManifest:
     """Resolved manifest — deduplicated BFS order from all roots."""
 
-    roots: tuple[type[BaseStructure] | type[BaseSemantic], ...]
+    roots: tuple[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection], ...]
     nodes: tuple[ManifestNode, ...]
 
     def structurals(self) -> tuple[ManifestNode, ...]:
-        return tuple(n for n in self.nodes if issubclass(n.cls, BaseStructure))
+        return tuple(
+            n
+            for n in self.nodes
+            if issubclass(n.cls, BaseStructure) and not issubclass(n.cls, BaseCollection)
+        )
 
     def semantics(self) -> tuple[ManifestNode, ...]:
         return tuple(n for n in self.nodes if issubclass(n.cls, BaseSemantic))
+
+    def collections(self) -> tuple[ManifestNode, ...]:
+        return tuple(n for n in self.nodes if issubclass(n.cls, BaseCollection))
 
 
 def _validate_namespace(ns: str, cls: type) -> None:
@@ -113,8 +121,19 @@ def _validate_extension_entries(cls: type[BaseStructure], extensions: Iterable[t
             )
 
 
+def _validate_extension_entries_for_collection(
+    cls: type[BaseCollection], extensions: Iterable[type]
+) -> None:
+    for ext in extensions:
+        if not issubclass(ext, BaseStructure | BaseSemantic | BaseCollection):
+            raise SchemaError(
+                f"{cls.__name__}.Schema.extensions contains {ext.__name__!r}, which is "
+                "not a BaseStructure, BaseSemantic, or BaseCollection subclass."
+            )
+
+
 def build_manifest(
-    roots: list[type[BaseStructure] | type[BaseSemantic]],
+    roots: list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]],
 ) -> SchemaManifest:
     """Resolve the transitive emission graph from the given roots.
 
@@ -125,6 +144,8 @@ def build_manifest(
     - Cycles raise ``SchemaError`` with the offending path.
     - ``BaseSemantic`` subclasses are terminal — the walk never reads
       ``Schema.*`` off them.
+    - ``BaseCollection`` subclasses are walked for ``Schema.extensions`` like
+      structural nodes but do not contribute tabular fields to the superschema.
     """
     if not roots:
         return SchemaManifest(roots=(), nodes=())
@@ -148,14 +169,23 @@ def build_manifest(
             continue
         seen.add(cls)
 
-        if not issubclass(cls, BaseStructure | BaseSemantic):
-            raise SchemaError(f"{cls.__name__!r} is not a BaseStructure or BaseSemantic subclass.")
+        if not issubclass(cls, BaseStructure | BaseSemantic | BaseCollection):
+            raise SchemaError(
+                f"{cls.__name__!r} is not a BaseStructure, BaseSemantic, or "
+                "BaseCollection subclass."
+            )
 
         namespace = get_schema_namespace(cls)
         if namespace is not None:
             _validate_namespace(namespace, cls)
 
-        if issubclass(cls, BaseStructure):
+        if issubclass(cls, BaseCollection):
+            extensions = get_schema_extensions(cls)
+            _validate_extension_entries_for_collection(cls, extensions)
+            nodes.append(ManifestNode(cls=cls, namespace=None, depth=depth))
+            for ext in extensions:
+                queue.append((ext, depth + 1, (*path, cls)))
+        elif issubclass(cls, BaseStructure):
             _validate_field_names(cls, namespace)
             extensions = get_schema_extensions(cls)
             _validate_extension_entries(cls, extensions)

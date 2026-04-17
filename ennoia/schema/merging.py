@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast, get_args, get_origin
 
 from ennoia.index.exceptions import SchemaError, SchemaWarning
-from ennoia.schema.base import BaseSemantic, BaseStructure
+from ennoia.schema.base import BaseCollection, BaseSemantic, BaseStructure
 from ennoia.schema.manifest import SchemaManifest
 from ennoia.schema.operators import (
     field_metadata,
@@ -166,8 +166,23 @@ def build_superschema(manifest: SchemaManifest) -> Superschema:
 
     for node in manifest.nodes:
         cls = node.cls
+        if issubclass(cls, BaseCollection):
+            semantic_indices.append(
+                {
+                    "name": cls.__name__,
+                    "description": cls.extract_prompt(),
+                    "kind": "collection",
+                }
+            )
+            continue
         if issubclass(cls, BaseSemantic):
-            semantic_indices.append({"name": cls.__name__, "description": cls.extract_prompt()})
+            semantic_indices.append(
+                {
+                    "name": cls.__name__,
+                    "description": cls.extract_prompt(),
+                    "kind": "semantic",
+                }
+            )
             continue
 
         assert issubclass(cls, BaseStructure)

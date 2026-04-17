@@ -324,5 +324,28 @@ def test_non_schema_root_raises() -> None:
     class NotASchema:
         pass
 
-    with pytest.raises(SchemaError, match="not a BaseStructure or BaseSemantic subclass"):
+    with pytest.raises(
+        SchemaError,
+        match="not a BaseStructure, BaseSemantic, or BaseCollection subclass",
+    ):
         build_manifest([NotASchema])  # type: ignore[list-item]
+
+
+def test_collection_extensions_must_be_schema_subclass() -> None:
+    # A BaseCollection with an extensions entry that is not a valid base
+    # schema subclass should raise at manifest build time.
+    from ennoia.schema.base import BaseCollection
+
+    class _NotASchema:
+        pass
+
+    class Coll(BaseCollection):
+        """Docstring."""
+
+        name: str
+
+        class Schema:
+            extensions = [_NotASchema]
+
+    with pytest.raises(SchemaError, match="not a BaseStructure, BaseSemantic"):
+        build_manifest([Coll])

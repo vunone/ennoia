@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from ennoia.events import Emitter, IndexEvent, NullEmitter, SearchEvent
@@ -14,10 +15,15 @@ from ennoia.index.extractor import CONFIDENCE_KEY
 from ennoia.index.query import plan_search
 from ennoia.index.result import IndexResult, SearchHit, SearchResult
 from ennoia.index.validation import validate_filters
-from ennoia.schema.base import BaseSemantic, BaseStructure, get_schema_namespace
+from ennoia.schema.base import (
+    BaseCollection,
+    BaseSemantic,
+    BaseStructure,
+    get_schema_namespace,
+)
 from ennoia.schema.manifest import build_manifest
 from ennoia.schema.merging import Superschema, build_superschema
-from ennoia.store.base import HybridStore
+from ennoia.store.base import HybridStore, VectorEntry
 from ennoia.utils.ids import extract_source_id, make_semantic_vector_id
 
 if TYPE_CHECKING:
@@ -31,8 +37,10 @@ __all__ = ["Pipeline"]
 class Pipeline:
     def __init__(
         self,
-        schemas: list[type[BaseStructure] | type[BaseSemantic]] | None = None,
-        semantics: list[type[BaseSemantic]] | None = None,
+        schemas: (
+            Sequence[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]] | None
+        ) = None,
+        semantics: Sequence[type[BaseSemantic]] | None = None,
         *,
         store: Store | HybridStore,
         llm: LLMAdapter,
@@ -43,24 +51,28 @@ class Pipeline:
         schemas = list(schemas or [])
         semantics = list(semantics or [])
 
-        # ``schemas=`` accepts both structural and semantic classes so users can
-        # write a single combined list per ``docs/quickstart.md``. Split them here.
+        # ``schemas=`` accepts structural, semantic, and collection classes so
+        # users can write a single combined list per ``docs/quickstart.md``. Split them here.
         structural: list[type[BaseStructure]] = []
         extracted_semantics: list[type[BaseSemantic]] = list(semantics)
+        collections: list[type[BaseCollection]] = []
         for cls in schemas:
-            if issubclass(cls, BaseSemantic):
+            if issubclass(cls, BaseCollection):
+                collections.append(cls)
+            elif issubclass(cls, BaseSemantic):
                 extracted_semantics.append(cls)
             else:
                 structural.append(cls)
 
-        validate_schemas([*structural, *extracted_semantics])
+        validate_schemas([*structural, *extracted_semantics, *collections])
         self._structural = structural
         self._semantics = extracted_semantics
+        self._collections = collections
         # Resolve the emission manifest (transitive closure of Schema.extensions)
         # and collapse it into the unified superschema once, at init. Both are
         # cached on the Pipeline so _persist, asearch, and discovery all read
         # the same source of truth.
-        self._manifest = build_manifest([*structural, *extracted_semantics])
+        self._manifest = build_manifest([*structural, *extracted_semantics, *collections])
         self._superschema: Superschema = build_superschema(self._manifest)
         self.store = store
         self.llm = llm
@@ -74,13 +86,15 @@ class Pipeline:
             raise ValueError(f"concurrency must be >= 1 or None, got {concurrency}")
         self._concurrency = concurrency
 
-    def schemas(self) -> list[type[BaseStructure] | type[BaseSemantic]]:
-        """Return the root schemas (structural + semantic) passed at construction.
+    def schemas(
+        self,
+    ) -> list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]]:
+        """Return the root schemas (structural + semantic + collection) passed at construction.
 
         Stable public accessor used by the server layer (:mod:`ennoia.server`)
         to render the discovery payload without reaching into private state.
         """
-        return [*self._structural, *self._semantics]
+        return [*self._structural, *self._semantics, *self._collections]
 
     def _make_semaphore(self) -> asyncio.Semaphore | None:
         # Semaphores bind to the running event loop, so we instantiate them
@@ -127,6 +141,7 @@ class Pipeline:
             batch = await execute_layers(
                 seed_structural=list(self._structural),
                 seed_semantic=list(self._semantics),
+                seed_collection=list(self._collections),
                 text=text,
                 llm=self.llm,
                 semaphore=sem,
@@ -147,13 +162,19 @@ class Pipeline:
             source_id=source_id,
             structural=batch.structural,
             semantic=batch.semantic,
+            collections=batch.collections,
             confidences=batch.confidences,
+            collection_confidences=batch.collection_confidences,
         )
         await self._apersist(result, sem)
         self.events.emit(
             IndexEvent(
                 source_id=source_id,
-                schemas_extracted=[*result.structural.keys(), *result.semantic.keys()],
+                schemas_extracted=[
+                    *result.structural.keys(),
+                    *result.semantic.keys(),
+                    *result.collections.keys(),
+                ],
                 rejected=False,
                 duration_ms=(time.perf_counter() - start) * 1000,
             )
@@ -294,46 +315,73 @@ class Pipeline:
                 dumped = {f"{ns}__{k}": v for k, v in dumped.items()}
             flat.update(dumped)
 
-        # Empty semantic answers are a signal from the LLM, not an invitation
-        # to embed the full document; skip them so we don't pollute the index.
-        pending = [(name, text) for name, text in result.semantic.items() if text]
+        # Collect the pending ``(index_name, text, unique)`` tuples in a stable
+        # order: semantics first (by schema name), then each collection's entities
+        # in the order they were extracted. Empty semantic answers are a signal
+        # from the LLM, not an invitation to embed the full document, so skip them.
+        pending: list[tuple[str, str, str | None]] = []
+        for name, text in result.semantic.items():
+            if text:
+                pending.append((name, text, None))
+        for name, entities in result.collections.items():
+            for entity in entities:
+                template_text = entity.template()
+                if not template_text:
+                    continue
+                pending.append((name, template_text, entity.get_unique()))
 
         if isinstance(self.store, HybridStore):
-            # Native hybrid: embed first (if needed), then one unified upsert.
-            vectors_dict: dict[str, list[float]] = {}
+            # Native hybrid: embed (if any) then one unified upsert.
+            entries: list[VectorEntry] = []
             if pending:
-                texts = [text for _, text in pending]
+                texts = [text for _, text, _ in pending]
                 embedded = await self._embed_documents(texts, semaphore)
-                vectors_dict = {
-                    name: vector for (name, _), vector in zip(pending, embedded, strict=True)
-                }
+                for (index_name, text, unique), vector in zip(pending, embedded, strict=True):
+                    entries.append(
+                        VectorEntry(
+                            index_name=index_name,
+                            vector=vector,
+                            text=text,
+                            unique=unique,
+                        )
+                    )
             await self.store.upsert(
                 source_id=result.source_id,
                 data=flat,
-                vectors=vectors_dict,
+                entries=entries,
             )
             return
 
-        # Composite path: persist structured record then individual vectors.
+        # Composite path: persist structured record once, then individual vectors.
         assert isinstance(self.store, Store)
         await self.store.structured.upsert(result.source_id, flat)
+
+        # Clear stale vectors for this source before re-writing. Collections use
+        # user-defined (often random) ``unique`` keys, so we cannot reliably
+        # overwrite by vector_id — old entries would accumulate forever.
+        # ``delete_by_source`` is implemented by every concrete VectorStore.
+        await self.store.vector.delete_by_source(result.source_id)
+
         if not pending:
             return
 
-        texts = [text for _, text in pending]
+        texts = [text for _, text, _ in pending]
         vectors = await self._embed_documents(texts, semaphore)
-        # Vector upserts run sequentially: every concrete VectorStore writes
-        # the same backing file/connection per call, so concurrent writes
-        # would race. Embedding is the slow step we parallelise above.
-        for (name, semantic_text), vector in zip(pending, vectors, strict=True):
+        # Vector upserts run sequentially: every concrete VectorStore writes the
+        # same backing file/connection per call, so concurrent writes would race.
+        # Embedding is the slow step we parallelise above.
+        for (index_name, semantic_text, unique), vector in zip(pending, vectors, strict=True):
+            metadata: dict[str, Any] = {
+                "source_id": result.source_id,
+                "index": index_name,
+                "text": semantic_text,
+            }
+            if unique is not None:
+                metadata["unique"] = unique
             await self.store.vector.upsert(
-                vector_id=make_semantic_vector_id(result.source_id, name),
+                vector_id=make_semantic_vector_id(result.source_id, index_name, unique),
                 vector=vector,
-                metadata={
-                    "source_id": result.source_id,
-                    "index": name,
-                    "text": semantic_text,
-                },
+                metadata=metadata,
             )
 
     async def _embed_documents(

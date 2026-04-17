@@ -3,24 +3,30 @@
 Schema (one table per ``collection``)::
 
     CREATE TABLE {collection} (
-        source_id  TEXT PRIMARY KEY,
-        data       JSONB NOT NULL,
-        {index_a}_vector vector(N),
-        {index_b}_vector vector(N),
-        ...
+        vector_id   TEXT PRIMARY KEY,
+        source_id   TEXT NOT NULL,
+        index_name  TEXT NOT NULL,
+        unique_key  TEXT,
+        text        TEXT,
+        data        JSONB NOT NULL,
+        vector      vector(N)
     );
 
-Vector columns materialise on first sight of a new semantic index and stay
-nullable so documents that don't activate an index don't need an explicit
-zero fill. Dimension is discovered from the first vector written.
+A document produces one row per :class:`~ennoia.store.base.VectorEntry`: one
+for each ``BaseSemantic`` answer, N for each ``BaseCollection`` with N
+entities. The full structural ``data`` payload is copied onto every row so a
+single SQL query can filter on structural fields and rank by vector similarity
+at the same time. The pipeline collapses rows back to one hit per ``source_id``
+at the search boundary.
 
-Multiple pipelines can coexist in one database by passing distinct
-``collection=`` names — each writes to its own table.
+Dimension is discovered from the first vector written; the ``vector`` column
+is added in place (``ALTER TABLE``) if the table was created before any
+vectors existed. Multiple pipelines coexist in one database by passing
+distinct ``collection=`` names — each writes to its own table.
 
 Filter translation is delegated to
 :func:`ennoia.store.hybrid._sql_filter.build_where`, which emits parameterised
-asyncpg ``$N`` placeholders. All 11 filter operators translate natively;
-there is no Python post-filter residual for this backend.
+asyncpg ``$N`` placeholders against the ``data`` jsonb column.
 
 Requires the ``pgvector`` extra (``asyncpg`` + ``pgvector``).
 """
@@ -32,11 +38,11 @@ Requires the ``pgvector`` extra (``asyncpg`` + ``pgvector``).
 from __future__ import annotations
 
 import json
-import re
 from typing import TYPE_CHECKING, Any
 
-from ennoia.store.base import HybridStore, validate_collection_name
+from ennoia.store.base import HybridStore, VectorEntry, validate_collection_name
 from ennoia.store.hybrid._sql_filter import build_where
+from ennoia.utils.ids import make_semantic_vector_id
 from ennoia.utils.imports import require_module
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -44,9 +50,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 __all__ = ["PgVectorHybridStore"]
-
-
-_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class PgVectorHybridStore(HybridStore):
@@ -61,8 +64,8 @@ class PgVectorHybridStore(HybridStore):
         self.collection = validate_collection_name(collection)
         self._table = self.collection
         self._conn: asyncpg.Connection | None = connection
-        self._known_indices: set[str] = set()
-        self._initialised = False
+        self._table_created = False
+        self._vector_dim: int | None = None
 
     async def _get_conn(self) -> asyncpg.Connection:
         conn = self._conn
@@ -79,63 +82,90 @@ class PgVectorHybridStore(HybridStore):
             await self._conn.close()
             self._conn = None
 
-    async def _ensure_schema(self, vector_dims: dict[str, int]) -> None:
+    async def _ensure_schema(self, sample_dim: int | None) -> None:
         conn = await self._get_conn()
-        if not self._initialised:
+        if not self._table_created:
             await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            vec_cols = ",\n    ".join(
-                f'"{_validate_index(name)}_vector" vector({dim})'
-                for name, dim in vector_dims.items()
-            )
-            cols_sql = f",\n    {vec_cols}" if vec_cols else ""
+            vector_col = f", vector vector({sample_dim})" if sample_dim is not None else ""
             await conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {self._table} ("
-                f"\n    source_id TEXT PRIMARY KEY,"
-                f"\n    data JSONB NOT NULL{cols_sql}\n)"
+                f"\n    vector_id   TEXT PRIMARY KEY,"
+                f"\n    source_id   TEXT NOT NULL,"
+                f"\n    index_name  TEXT NOT NULL,"
+                f"\n    unique_key  TEXT,"
+                f"\n    text        TEXT,"
+                f"\n    data        JSONB NOT NULL"
+                f"{vector_col}"
+                f"\n)"
             )
-            self._known_indices.update(vector_dims.keys())
-            self._initialised = True
+            await conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {self._table}_source_idx ON {self._table} (source_id)"
+            )
+            await conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {self._table}_index_name_idx "
+                f"ON {self._table} (index_name)"
+            )
+            self._table_created = True
+            self._vector_dim = sample_dim
             return
 
-        # Table exists; add any new index columns.
-        new = set(vector_dims.keys()) - self._known_indices
-        for name in new:
-            dim = vector_dims[name]
+        # Table exists. If the vector column wasn't created at CREATE TABLE
+        # time (first upsert had no vectors) and we now see one, add it.
+        if self._vector_dim is None and sample_dim is not None:
             await conn.execute(
-                f"ALTER TABLE {self._table} ADD COLUMN IF NOT EXISTS "
-                f'"{_validate_index(name)}_vector" vector({dim})'
+                f"ALTER TABLE {self._table} ADD COLUMN IF NOT EXISTS vector vector({sample_dim})"
             )
-        self._known_indices.update(new)
+            self._vector_dim = sample_dim
 
     async def upsert(
         self,
         source_id: str,
         data: dict[str, Any],
-        vectors: dict[str, list[float]],
+        entries: list[VectorEntry],
     ) -> None:
-        dims = {name: len(v) for name, v in vectors.items()}
-        await self._ensure_schema(dims)
+        # Replace-by-source semantics: drop any prior rows for this document
+        # before inserting the new set. Simpler than row-level UPSERT and
+        # correct for N → M cardinality changes (e.g., a collection shrinking
+        # on re-index).
+        sample_dim = len(entries[0].vector) if entries else None
+        await self._ensure_schema(sample_dim)
         conn = await self._get_conn()
+        data_json = json.dumps(data)
 
-        columns = ["source_id", "data"]
-        placeholders: list[str] = ["$1", "$2"]
-        params: list[Any] = [source_id, json.dumps(data)]
-        updates = ["data = EXCLUDED.data"]
-        idx = 3
-        for name, vec in vectors.items():
-            col = f'"{_validate_index(name)}_vector"'
-            columns.append(col)
-            placeholders.append(f"${idx}")
-            params.append(_vector_literal(vec))
-            updates.append(f"{col} = EXCLUDED.{col}")
-            idx += 1
+        async with conn.transaction():
+            await conn.execute(
+                f"DELETE FROM {self._table} WHERE source_id = $1",
+                source_id,
+            )
+            if not entries:
+                # No vectors to persist, but we still record structural state
+                # so ``get()`` / ``filter()`` can see this document. Use a
+                # stable reserved sentinel index name.
+                await conn.execute(
+                    f"INSERT INTO {self._table} "
+                    f"(vector_id, source_id, index_name, unique_key, text, data) "
+                    f"VALUES ($1, $2, $3, NULL, NULL, $4::jsonb)",
+                    make_semantic_vector_id(source_id, ""),
+                    source_id,
+                    "",
+                    data_json,
+                )
+                return
 
-        await conn.execute(
-            f"INSERT INTO {self._table} ({', '.join(columns)}) "
-            f"VALUES ({', '.join(placeholders)}) "
-            f"ON CONFLICT (source_id) DO UPDATE SET {', '.join(updates)}",
-            *params,
-        )
+            for entry in entries:
+                vector_id = make_semantic_vector_id(source_id, entry.index_name, entry.unique)
+                await conn.execute(
+                    f"INSERT INTO {self._table} "
+                    f"(vector_id, source_id, index_name, unique_key, text, data, vector) "
+                    f"VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector)",
+                    vector_id,
+                    source_id,
+                    entry.index_name,
+                    entry.unique,
+                    entry.text,
+                    data_json,
+                    _vector_literal(entry.vector),
+                )
 
     async def hybrid_search(
         self,
@@ -145,52 +175,62 @@ class PgVectorHybridStore(HybridStore):
         *,
         index: str | None = None,
     ) -> list[tuple[str, float, dict[str, Any]]]:
-        conn = await self._get_conn()
-        # Default to the first-seen index when none is specified; for a
-        # freshly-constructed store without prior upserts there is no index
-        # and we return empty.
-        using = index or (next(iter(sorted(self._known_indices))) if self._known_indices else None)
-        if using is None:
+        if not self._table_created or self._vector_dim is None:
             return []
-        col = f'"{_validate_index(using)}_vector"'
 
+        conn = await self._get_conn()
         where_sql, where_params = build_where(filters)
-        vector_param_index = len(where_params) + 1
-        top_k_param_index = vector_param_index + 1
+        params: list[Any] = list(where_params)
+
+        clauses = [f"({where_sql})", "vector IS NOT NULL"]
+        if index is not None:
+            params.append(index)
+            clauses.append(f"index_name = ${len(params)}")
+
+        params.append(_vector_literal(query_vector))
+        vector_param_idx = len(params)
+        params.append(top_k)
+        top_k_param_idx = len(params)
+
         sql = (
-            f"SELECT source_id, data, ({col} <=> ${vector_param_index}) AS distance"
+            f"SELECT vector_id, source_id, index_name, unique_key, text, data,"
+            f" (vector <=> ${vector_param_idx}::vector) AS distance"
             f" FROM {self._table}"
-            f" WHERE ({where_sql}) AND {col} IS NOT NULL"
-            f" ORDER BY {col} <=> ${vector_param_index} ASC"
-            f" LIMIT ${top_k_param_index}"
+            f" WHERE {' AND '.join(clauses)}"
+            f" ORDER BY vector <=> ${vector_param_idx}::vector ASC"
+            f" LIMIT ${top_k_param_idx}"
         )
-        rows = await conn.fetch(sql, *where_params, _vector_literal(query_vector), top_k)
+        rows = await conn.fetch(sql, *params)
         out: list[tuple[str, float, dict[str, Any]]] = []
         for row in rows:
             payload = _json_load(row["data"])
             payload["source_id"] = row["source_id"]
-            payload["index"] = using
-            distance = float(row["distance"])
-            # Convert pgvector cosine distance (0..2, lower is closer) to a
-            # similarity score (higher is closer) so the pipeline's sort
-            # direction matches every other backend.
-            score = 1.0 - distance
-            out.append((f"{row['source_id']}:{using}", score, payload))
+            payload["index"] = row["index_name"]
+            payload["text"] = row["text"] or ""
+            if row["unique_key"] is not None:
+                payload["unique"] = row["unique_key"]
+            # pgvector cosine distance (0..2, lower is closer) → similarity.
+            score = 1.0 - float(row["distance"])
+            out.append((row["vector_id"], score, payload))
         return out
 
     async def filter(self, filters: dict[str, Any]) -> list[str]:
+        if not self._table_created:
+            return []
         conn = await self._get_conn()
         where_sql, params = build_where(filters)
         rows = await conn.fetch(
-            f"SELECT source_id FROM {self._table} WHERE {where_sql}",
+            f"SELECT DISTINCT source_id FROM {self._table} WHERE {where_sql}",
             *params,
         )
         return [row["source_id"] for row in rows]
 
     async def get(self, source_id: str) -> dict[str, Any] | None:
+        if not self._table_created:
+            return None
         conn = await self._get_conn()
         row = await conn.fetchrow(
-            f"SELECT data FROM {self._table} WHERE source_id = $1",
+            f"SELECT data FROM {self._table} WHERE source_id = $1 LIMIT 1",
             source_id,
         )
         if row is None:
@@ -198,25 +238,16 @@ class PgVectorHybridStore(HybridStore):
         return _json_load(row["data"])
 
     async def delete(self, source_id: str) -> bool:
+        if not self._table_created:
+            return False
         conn = await self._get_conn()
         result = await conn.execute(
             f"DELETE FROM {self._table} WHERE source_id = $1",
             source_id,
         )
-        # asyncpg's ``execute`` returns a string like "DELETE 1" — parse the count.
         if isinstance(result, str) and result.startswith("DELETE "):
             return int(result.split()[1]) > 0
         return False  # pragma: no cover — every asyncpg DELETE returns this shape
-
-
-def _validate_index(name: str) -> str:
-    if not _IDENT_RE.match(name):
-        raise ValueError(
-            f"Semantic index name {name!r} is not a safe SQL identifier. "
-            "Ennoia index names are class names, which should always match; "
-            "this error indicates a misconfigured schema."
-        )
-    return name
 
 
 def _vector_literal(vec: list[float]) -> str:
