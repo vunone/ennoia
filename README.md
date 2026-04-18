@@ -8,179 +8,157 @@
 [![types: pyright strict](https://img.shields.io/badge/types-pyright%20strict-informational.svg)](https://microsoft.github.io/pyright/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-Ennoia introduces **Declarative Document Indexing Schemas (DDI Schemas)**
-for RAG — a new pre-indexing approach where LLM-powered extraction is
-defined through schemas and executed *before* documents enter any store,
-replacing naive chunk-and-embed with structured, queryable indices.
+Ennoia is a Python library for indexing documents with LLM-extracted structure. You declare typed **extractors** — Python classes that describe what to pull out of each document — and Ennoia runs the extraction, persists the results, and gives you hybrid filter + vector search on the output.
 
-> Traditional RAG is like feeding your documents through a shredder and
-> then trying to answer questions by pulling out strips of paper one by
-> one.
->
-> Ennoia is like reading each document first, taking structured notes on
-> what matters, and then searching your notes — while keeping the
-> originals on the shelf.
+**Status:** alpha (`0.3.x`). API is converging but may still shift between minor versions. Benchmarks: TBD.
 
 ## Install
 
 ```bash
-pip install "ennoia[ollama,sentence-transformers,cli]"
+pip install "ennoia[ollama,sentence-transformers]"
 ```
 
-Available extras: `ollama`, `openai`, `anthropic`, `sentence-transformers`,
-`filesystem` (Parquet + NumPy stores), `cli` (`ennoia` CLI),
-`qdrant` (Qdrant vector + hybrid stores),
-`pgvector` (PostgreSQL + pgvector hybrid store),
-`server` (FastAPI REST + FastMCP),
-`docs` (mkdocs-material site),
-`benchmark` (CUAD comparison harness — see [benchmark/README.md](benchmark/README.md)),
-`all` (everything above).
+The quickstart below needs nothing else. Other extras plug in when you need them:
 
-## Quick start (SDK)
+| Extra | Adds |
+|---|---|
+| `openai`, `anthropic` | Hosted LLM adapters |
+| `sentence-transformers` | Local embedding adapter |
+| `filesystem` | Parquet + NumPy persistent stores |
+| `qdrant` | Qdrant vector + hybrid store |
+| `pgvector` | PostgreSQL + pgvector hybrid store |
+| `cli` | `ennoia` command |
+| `server` | FastAPI REST + FastMCP |
+| `all` | Everything above |
+
+## Showcase
+
+Three extractor kinds, one `extend()` branch, a hybrid search — runnable end-to-end with a local Ollama:
 
 ```python
 from datetime import date
-from typing import Literal
+from typing import Annotated, ClassVar, Literal
 
-from ennoia import BaseSemantic, BaseStructure, Pipeline, Store
+from ennoia import (
+    BaseCollection, BaseSemantic, BaseStructure,
+    Field, Pipeline, Store,
+)
 from ennoia.adapters.embedding.sentence_transformers import SentenceTransformerEmbedding
 from ennoia.adapters.llm.ollama import OllamaAdapter
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore
 
 
-# DDI Schema #1 — structured extraction. Field types drive filter
-# operators automatically (Literal → eq/in, date → range ops); the
-# docstring is the LLM prompt.
-class DocMeta(BaseStructure):
-    """Extract basic document metadata."""
+class PaymentTerms(BaseStructure):
+    """Extract the payment terms of a high-value contract."""
 
-    category: Literal["legal", "medical", "financial"]
-    doc_date: date
+    net_days: Annotated[int, Field(description="Net payment window in days.")]
+    late_fee_pct: Annotated[float, Field(description="Late fee as a decimal, e.g. 0.015 for 1.5%.")]
 
 
-# DDI Schema #2 — semantic extraction. The docstring is the question the
-# LLM answers; the answer is embedded for vector search.
-class Summary(BaseSemantic):
-    """What is the main topic of this document?"""
+class ContractMeta(BaseStructure):
+    """Extract the header of a master services agreement."""
+
+    governing_law: Annotated[
+        Literal["Delaware", "New York", "California"],
+        Field(description="US state whose law governs the agreement."),
+    ]
+    effective_date: Annotated[date, Field(description="Date the agreement takes effect.")]
+    contract_value: Annotated[
+        int, Field(description="Total fees in USD across the initial term; 0 if not stated."),
+    ]
+
+    def extend(self) -> list[type[BaseStructure]]:
+        # High-value agreements branch into a deeper extractor.
+        return [PaymentTerms] if self.contract_value >= 100_000 else []
+
+    class Schema(BaseStructure.Schema):
+        extensions: ClassVar[list[type]] = [PaymentTerms]
 
 
-# DDI Schema #3 — collection extraction. The LLM iterates until it has
-# captured every entity; each entity is embedded as its own searchable row.
-from ennoia import BaseCollection
+class ContractSummary(BaseSemantic):
+    """What services does the provider deliver under this agreement?"""
 
 
 class Party(BaseCollection):
-    """Extract every party mentioned in the document."""
+    """Extract every party named in the agreement."""
 
-    company_name: str
-    participation_year: int
+    legal_name: Annotated[str, Field(description="Full legal name of the party.")]
+    role: Annotated[
+        Literal["provider", "client"],
+        Field(description="Whether this party provides or receives the services."),
+    ]
+
+    def get_unique(self) -> str:
+        return self.legal_name.casefold()
 
     def template(self) -> str:
-        return f"{self.company_name} ({self.participation_year})"
+        return f"{self.legal_name} ({self.role})"
 
 
-# Configure the pipeline: schemas + a two-phase store (structured filter
-# → vector search) + LLM and embedding adapters.
 pipeline = Pipeline(
-    schemas=[DocMeta, Summary, Party],
+    schemas=[ContractMeta, ContractSummary, Party],
     store=Store(vector=InMemoryVectorStore(), structured=InMemoryStructuredStore()),
     llm=OllamaAdapter(model="qwen3:0.6b"),
     embedding=SentenceTransformerEmbedding(model="all-MiniLM-L6-v2"),
 )
 
-# Pre-indexing: every schema runs against the document once, before writing
-# structured fields to the structured store and embedded answers to the
-# vector store — before any query touches them.
-pipeline.index(text="The court held that...", source_id="doc_001")
+pipeline.index(text=AGREEMENT_TEXT, source_id="msa-acme-globex")
 
-# Hybrid search: `filters` narrows candidates via the structured store,
-# then vector similarity ranks within that subset.
-results = pipeline.search(
-    query="court holdings on liability",
-    filters={"category": "legal"},
-    top_k=5,
+hits = pipeline.search(
+    query="payment obligations and late fees",
+    filters={"governing_law": "Delaware"},
+    top_k=3,
 )
 ```
 
-See [docs/quickstart.md](https://github.com/vunone/ennoia/blob/main/docs/quickstart.md) for the full walkthrough.
+Two patterns to note:
 
-## Quick start (CLI)
+- **Class docstring is the extractor-level prompt.** The LLM sees `ContractMeta.__doc__` as the task description.
+- **`Field(description=...)` is the per-field prompt.** Field descriptions ride on the JSON schema the extractor sends to the LLM, which makes every field's intent visible next to its type.
+
+A runnable version of this script lives at [examples/04_extend_branching.py](https://github.com/vunone/ennoia/blob/main/examples/04_extend_branching.py). For a smaller first step, [examples/01_getting_started.py](https://github.com/vunone/ennoia/blob/main/examples/01_getting_started.py) uses one structural and one semantic extractor only.
+
+## When to reach for it
+
+- You need **hybrid filter + vector search** on the same corpus — not one or the other.
+- Your documents carry **structure** (dates, parties, categories, clauses) that plain chunking discards.
+- You want the **LLM pre-processing step to be typed and visible in your diff**, not buried in a prompt string at runtime.
+
+## CLI
 
 ```bash
-# Iterate on a schema against a single document
-ennoia try ./sample.txt --schema my_schemas.py
-
-# Index a folder into a filesystem-backed store
-ennoia index ./docs \
-  --schema my_schemas.py \
-  --store ./my_index \
-  --collection cases \
+# Index a folder into a filesystem-backed store.
+ennoia index ./contracts \
+  --schema my_extractors.py \
+  --store ./contracts_index \
+  --collection contracts \
   --llm ollama:qwen3:0.6b \
   --embedding sentence-transformers:all-MiniLM-L6-v2
 
-# …or into a production Qdrant / pgvector backend
-ennoia index ./docs \
-  --schema my_schemas.py \
-  --store qdrant:cases \
-  --qdrant-url http://localhost:6333 \
-  --llm openai:gpt-4o-mini \
-  --embedding openai-embedding:text-embedding-3-small
-
-# Hybrid search
-ennoia search "employer duty to accommodate disability" \
-  --schema my_schemas.py \
-  --store ./my_index \
-  --collection cases \
-  --filter "jurisdiction=WA" \
-  --filter "date_decided__gte=2020-01-01" \
+# Hybrid search.
+ennoia search "payment obligations and late fees" \
+  --schema my_extractors.py \
+  --store ./contracts_index \
+  --collection contracts \
+  --filter "governing_law=Delaware" \
+  --filter "effective_date__gte=2025-01-01" \
   --top-k 5
 ```
 
-See [docs/cli.md](https://github.com/vunone/ennoia/blob/main/docs/cli.md).
-
-## Serve an index (REST + MCP)
-
-Stage 3 ships two remote interfaces. Both accept the same `--store`
-prefix scheme (filesystem path, `qdrant:<collection>`, or
-`pgvector:<collection>`) as `ennoia index`:
-
-```bash
-# REST — full CRUD for application integration.
-export ENNOIA_API_KEY=sekret
-ennoia api --store ./my_index --schema my_schemas.py --port 8080
-
-# MCP — read-only tools (discover_schema, filter, search, retrieve) for agents,
-# pointed at a production Qdrant collection.
-export ENNOIA_QDRANT_URL=http://localhost:6333
-ennoia mcp --store qdrant:cases --schema my_schemas.py --transport sse --port 8090
-```
-
-Agents consume the MCP flow `discover_schema → filter → search(filter_ids=...) → retrieve`
-out of the box. See [docs/serve.md](https://github.com/vunone/ennoia/blob/main/docs/serve.md).
-
-## Benchmarks
-
-A reproducible CUAD legal-QA benchmark pits ennoia DDI+RAG against a textbook
-langchain shred-embed RAG baseline using identical models (`gpt-5.4-nano` for
-generation, `text-embedding-3-small` for embeddings, `gpt-5.4` as judge):
-
-![CUAD benchmark](benchmark/results/chart_latest.png)
-
-See [benchmark/README.md](benchmark/README.md) for methodology, the one-command
-reproduction, and the cookbook walkthrough at
-[docs/cookbook/cuad-benchmark.md](https://github.com/vunone/ennoia/blob/main/docs/cookbook/cuad-benchmark.md).
+`ennoia try <document> --schema <file>` runs a single extraction without writing to any store — useful while iterating on extractors. `ennoia api` and `ennoia mcp` serve an existing index over REST or MCP respectively.
 
 ## Documentation
 
-- [Concepts](https://github.com/vunone/ennoia/blob/main/docs/concepts.md)
-- [Quickstart](https://github.com/vunone/ennoia/blob/main/docs/quickstart.md)
-- [Schema authoring](https://github.com/vunone/ennoia/blob/main/docs/schemas.md)
-- [Filter language](https://github.com/vunone/ennoia/blob/main/docs/filters.md)
-- [CLI reference](https://github.com/vunone/ennoia/blob/main/docs/cli.md)
-- [Adapters](https://github.com/vunone/ennoia/blob/main/docs/adapters.md)
-- [Stores](https://github.com/vunone/ennoia/blob/main/docs/stores.md)
-- [Serve (REST + MCP)](https://github.com/vunone/ennoia/blob/main/docs/serve.md)
-- [Testing utilities](https://github.com/vunone/ennoia/blob/main/docs/testing.md)
+- [Getting started](https://github.com/vunone/ennoia/blob/main/docs/getting-started.md) — 10-minute walkthrough
+- [Concepts](https://github.com/vunone/ennoia/blob/main/docs/concepts.md) — extractor kinds, the extraction DAG, two-phase retrieval
+- [Extractors](https://github.com/vunone/ennoia/blob/main/docs/extractors.md) — authoring reference
+- [Filters](https://github.com/vunone/ennoia/blob/main/docs/filters.md) — filter language
+- [Stores](https://github.com/vunone/ennoia/blob/main/docs/stores.md) — in-memory, filesystem, Qdrant, pgvector
+- [Adapters](https://github.com/vunone/ennoia/blob/main/docs/adapters.md) — LLM + embedding backends
+- [CLI](https://github.com/vunone/ennoia/blob/main/docs/cli.md) — command reference
+- [Serve](https://github.com/vunone/ennoia/blob/main/docs/serve.md) — REST + MCP
+- [Testing](https://github.com/vunone/ennoia/blob/main/docs/testing.md) — mocks and fixtures
+- [Runnable examples](https://github.com/vunone/ennoia/tree/main/examples) — every concept as a standalone script
 
 ## License
 
