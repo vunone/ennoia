@@ -149,7 +149,7 @@ ennoia search "payment obligations and late fees" \
 
 ## Documentation
 
-- [Getting started](https://github.com/vunone/ennoia/blob/main/docs/getting-started.md) — 10-minute walkthrough
+- [Getting started](https://github.com/vunone/ennoia/blob/main/docs/quickstart.md) — 10-minute walkthrough
 - [Concepts](https://github.com/vunone/ennoia/blob/main/docs/concepts.md) — extractor kinds, the extraction DAG, two-phase retrieval
 - [Extractors](https://github.com/vunone/ennoia/blob/main/docs/extractors.md) — authoring reference
 - [Filters](https://github.com/vunone/ennoia/blob/main/docs/filters.md) — filter language
