@@ -23,6 +23,7 @@ The quickstart below needs nothing else. Other extras plug in when you need them
 | Extra | Adds |
 |---|---|
 | `openai`, `anthropic` | Hosted LLM adapters |
+| `ollama` | Local LLM adapter |
 | `sentence-transformers` | Local embedding adapter |
 | `filesystem` | Parquet + NumPy persistent stores |
 | `qdrant` | Qdrant vector + hybrid store |
