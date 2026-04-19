@@ -29,6 +29,7 @@ env/
 *.parquet
 *.npy
 /.ennoia/
+ennoia.ini
 
 # Benchmark caches (HF dataset, large; sample.json + results stay tracked)
 /benchmark/data/cache/

@@ -35,8 +35,9 @@ what you extract.
 Inter-schema dependencies are expressed at runtime: a `BaseStructure`'s
 `extend()` method returns further schemas to run after the parent is
 extracted. The parent instance is available via `self`, including its
-self-reported `_confidence`, so conditional branching — "only attempt the
-expensive schema if the parent is above 0.85 confidence" — is a one-liner.
+self-reported confidence via `self.confidence`, so conditional branching
+— "only attempt the expensive schema if the parent is above 0.85
+confidence" — is a one-liner.
 
 ```python
 class CaseDocument(BaseStructure):
@@ -70,12 +71,14 @@ ahead of time, merged, and namespaced consistently. See
 Confidence is not a declared field on `BaseStructure`. If it were, it would
 appear at the top of the JSON Schema and bias the model to guess a score
 before filling in the real fields. Instead, the extractor dynamically
-appends `_confidence` as the final property of the prompted schema and
-instructs the model to emit it last — so the score is evaluated *after*
-the extraction has been produced. `BaseStructure` is configured with
-`ConfigDict(extra="allow")`, which lets the model's `_confidence` ride on
-the validated instance for `extend()` to consult; the pipeline strips it
-before persistence.
+appends `extraction_confidence` as the final property of the prompted
+schema and instructs the model to emit it last — so the score is
+evaluated *after* the extraction has been produced. `BaseStructure` and
+`BaseCollection` are configured with `ConfigDict(extra="allow")`, which
+lets the model's `extraction_confidence` ride on the validated instance.
+Access it via the `self.confidence` property; when the LLM omits the
+field the property falls back to `Schema.default_confidence` (default
+`1.0`). The pipeline strips the extra before persistence.
 
 ## Two-phase retrieval
 

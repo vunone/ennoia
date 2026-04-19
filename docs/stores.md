@@ -14,7 +14,8 @@ single `await` path regardless of backing storage.
 - `StructuredStore`: `async upsert` / `async filter` / `async get`
 - `VectorStore`: `async upsert` / `async search`
 - `HybridStore`: `async upsert` / `async hybrid_search` / `async get` /
-  `async filter` (powers the two-phase MCP flow)
+  `async filter` (powers `Pipeline.afilter` and the REST `POST /filter`
+  endpoint; MCP `search` uses the hybrid-native single-roundtrip query)
 
 ## Built-in backends
 

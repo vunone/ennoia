@@ -29,8 +29,7 @@ class Parent(BaseStructure):
         extensions = [Child]
 
     def extend(self) -> list[type[BaseStructure] | type[BaseSemantic]]:
-        # Read _confidence set by the extractor; branch when above threshold.
-        if getattr(self, "_confidence", 0.0) >= 0.8:
+        if self.confidence >= 0.8:
             return [Child]
         return []
 
@@ -69,8 +68,11 @@ def _pipeline(llm: RecordingLLM) -> Pipeline:
 def test_high_confidence_branches_into_child() -> None:
     llm = RecordingLLM(
         {
-            "Extract parent fields.": {"label": "parent-value", "_confidence": 0.95},
-            "Extract child based on parent.": {"detail": "child-value", "_confidence": 0.9},
+            "Extract parent fields.": {"label": "parent-value", "extraction_confidence": 0.95},
+            "Extract child based on parent.": {
+                "detail": "child-value",
+                "extraction_confidence": 0.9,
+            },
         }
     )
     pipeline = _pipeline(llm)
@@ -84,7 +86,9 @@ def test_high_confidence_branches_into_child() -> None:
 
 
 def test_low_confidence_skips_child() -> None:
-    llm = RecordingLLM({"Extract parent fields.": {"label": "parent-value", "_confidence": 0.4}})
+    llm = RecordingLLM(
+        {"Extract parent fields.": {"label": "parent-value", "extraction_confidence": 0.4}}
+    )
     pipeline = _pipeline(llm)
     result = pipeline.index(text="body", source_id="d2")
     assert "Child" not in result.structural
@@ -94,7 +98,7 @@ def test_low_confidence_skips_child() -> None:
 def test_confidence_stripped_from_store_payload() -> None:
     import asyncio
 
-    llm = RecordingLLM({"Extract parent fields.": {"label": "x", "_confidence": 0.5}})
+    llm = RecordingLLM({"Extract parent fields.": {"label": "x", "extraction_confidence": 0.5}})
     pipeline = _pipeline(llm)
     pipeline.index(text="body", source_id="d3")
     stored = asyncio.run(pipeline.store.structured.get("d3"))
@@ -103,8 +107,37 @@ def test_confidence_stripped_from_store_payload() -> None:
     assert stored == {"label": "x", "detail": None}
 
 
-def test_missing_confidence_defaults_to_one() -> None:
-    llm = RecordingLLM({"Extract parent fields.": {"label": "x"}})
+def test_missing_confidence_uses_schema_default() -> None:
+    # The LLM omits extraction_confidence; the property falls through to
+    # Parent.Schema.default_confidence (1.0 by default), which clears the
+    # 0.8 threshold and still queues Child.
+    llm = RecordingLLM(
+        {
+            "Extract parent fields.": {"label": "x"},
+            "Extract child based on parent.": {"detail": "c", "extraction_confidence": 0.9},
+        }
+    )
     pipeline = _pipeline(llm)
     result = pipeline.index(text="body", source_id="d4")
     assert result.confidences["Parent"] == 1.0
+
+
+class LowDefaultParent(BaseStructure):
+    """Extract low-default parent fields."""
+
+    label: str
+
+    class Schema:
+        default_confidence = 0.3
+
+
+def test_missing_confidence_honours_schema_default_override() -> None:
+    llm = RecordingLLM({"Extract low-default parent fields.": {"label": "x"}})
+    pipeline = Pipeline(
+        schemas=[LowDefaultParent],
+        store=Store(vector=InMemoryVectorStore(), structured=InMemoryStructuredStore()),
+        llm=llm,
+        embedding=FakeEmbedding(),
+    )
+    result = pipeline.index(text="body", source_id="d5")
+    assert result.confidences["LowDefaultParent"] == 0.3

@@ -30,15 +30,44 @@ class Summary(BaseSemantic):
 
 class _FakeLLM(LLMAdapter):
     async def complete_json(self, prompt: str) -> dict[str, object]:
-        return {"category": "legal", "_confidence": 0.9}
+        return {"category": "legal", "extraction_confidence": 0.9}
 
     async def complete_text(self, prompt: str) -> str:
-        return "A legal document. <confidence>0.9</confidence>"
+        return "A legal document. <extraction_confidence>0.9</extraction_confidence>"
 
 
 class _FakeEmbedding(EmbeddingAdapter):
     async def embed(self, text: str) -> list[float]:
         return [1.0, 0.0]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cli_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Hermetic cwd + clean env so the repo-root ``ennoia.ini`` never leaks in.
+
+    The CLI auto-loads ``./ennoia.ini`` from the working directory; running
+    pytest from the repo root would otherwise pick up the project's own dev
+    config (which points at a non-existent ``./schema.py``) and fail flag
+    validation in any test that doesn't pass ``--schema`` explicitly.
+    """
+    isolated = tmp_path / "_cli_cwd"
+    isolated.mkdir()
+    monkeypatch.chdir(isolated)
+    for name in (
+        "ENNOIA_LLM",
+        "ENNOIA_EMBEDDING",
+        "ENNOIA_STORE",
+        "ENNOIA_SCHEMA",
+        "ENNOIA_COLLECTION",
+        "ENNOIA_QDRANT_URL",
+        "ENNOIA_QDRANT_API_KEY",
+        "ENNOIA_PG_DSN",
+        "ENNOIA_HOST",
+        "ENNOIA_PORT",
+        "ENNOIA_TRANSPORT",
+        "ENNOIA_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture()
@@ -80,10 +109,10 @@ def test_try_command_prints_fields_and_confidence(
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "Schema: Doc" in result.output
+    assert "Extractor[BaseStructure]: Doc" in result.output
     assert "category" in result.output
     assert "confidence: 0.90" in result.output
-    assert "Schema: Summary" in result.output
+    assert "Extractor[BaseSemantic]: Summary" in result.output
 
 
 def test_try_command_rejects_unknown_embedding_flag(
@@ -295,7 +324,7 @@ def testload_schemas_rejects_module_with_no_schemas(tmp_path: Path) -> None:
 
     empty = tmp_path / "empty.py"
     empty.write_text("x = 1\n")
-    with pytest.raises(typer.BadParameter, match="No BaseStructure/BaseSemantic"):
+    with pytest.raises(typer.BadParameter, match="No BaseStructure/BaseSemantic/BaseCollection"):
         cli_main.load_schemas(empty)
 
 
@@ -454,6 +483,38 @@ def test_search_reports_no_hits_when_store_empty(
     )
     assert result.exit_code == 0, result.output
     assert "No hits." in result.output
+
+
+def test_index_command_without_explicit_flags_when_ini_present(
+    patched_adapters: None,
+    schema_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Full INI happy-path: all required flags (schema, store, llm, embedding)
+    # come from ennoia.ini; only the positional directory is passed.
+    for name in (
+        "ENNOIA_LLM",
+        "ENNOIA_EMBEDDING",
+        "ENNOIA_STORE",
+        "ENNOIA_SCHEMA",
+        "ENNOIA_COLLECTION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.chdir(tmp_path)
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "a.txt").write_text("body 1")
+    store_dir = tmp_path / "idx"
+
+    (tmp_path / "ennoia.ini").write_text(
+        f"[ennoia]\nschema = {schema_file}\nstore = {store_dir}\nllm = fake:m\nembedding = fake:m\n"
+    )
+
+    result = CliRunner().invoke(cli_main.app, ["index", str(docs_dir)])
+    assert result.exit_code == 0, result.output
+    assert "Indexed 1 document(s)" in result.output
 
 
 def test_search_renders_hits(patched_adapters: None, schema_file: Path, tmp_path: Path) -> None:

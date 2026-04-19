@@ -158,7 +158,7 @@ def test_empty_semantic_answer_skips_vector_upsert() -> None:
         schemas=[_Doc, _Summary],
         store=store,
         llm=_LLM(
-            json_map={"Extract doc metadata.": {"cat": "legal", "_confidence": 0.9}},
+            json_map={"Extract doc metadata.": {"cat": "legal", "extraction_confidence": 0.9}},
             text_map={"Summarise doc.": ""},
         ),
         embedding=_Embedding(),
@@ -243,7 +243,7 @@ def test_persist_to_hybrid_store_calls_upsert_once() -> None:
         schemas=[_Doc, _Summary],
         store=store,
         llm=_LLM(
-            json_map={"Extract doc metadata.": {"cat": "legal", "_confidence": 0.9}},
+            json_map={"Extract doc metadata.": {"cat": "legal", "extraction_confidence": 0.9}},
             text_map={"Summarise doc.": "a summary"},
         ),
         embedding=_Embedding(),
@@ -265,7 +265,7 @@ def test_persist_to_hybrid_store_skips_vectors_when_semantic_empty() -> None:
         schemas=[_Doc, _Summary],
         store=store,
         llm=_LLM(
-            json_map={"Extract doc metadata.": {"cat": "legal", "_confidence": 0.9}},
+            json_map={"Extract doc metadata.": {"cat": "legal", "extraction_confidence": 0.9}},
             text_map={"Summarise doc.": ""},  # empty semantic answer
         ),
         embedding=_Embedding(),

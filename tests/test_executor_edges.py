@@ -23,7 +23,7 @@ class _LLM(LLMAdapter):
         raise AssertionError(f"Unexpected prompt: {prompt[:80]}")
 
     async def complete_text(self, prompt: str) -> str:
-        return "text-answer <confidence>0.9</confidence>"
+        return "text-answer <extraction_confidence>0.9</extraction_confidence>"
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ class _ParentEmittingUndeclared(BaseStructure):
 
 
 async def test_extend_returning_undeclared_class_raises_schema_error() -> None:
-    llm = _LLM({"Parent whose extend": {"label": "x", "_confidence": 0.9}})
+    llm = _LLM({"Parent whose extend": {"label": "x", "extraction_confidence": 0.9}})
     with pytest.raises(SchemaError, match="not declared in Schema.extensions"):
         await execute_layers(
             seed_structural=[_ParentEmittingUndeclared],
@@ -83,7 +83,7 @@ class _ParentWithSemanticChild(BaseStructure):
 
 
 async def test_extend_queues_semantic_child() -> None:
-    llm = _LLM({"Parent pulling in a semantic child": {"label": "x", "_confidence": 0.9}})
+    llm = _LLM({"Parent pulling in a semantic child": {"label": "x", "extraction_confidence": 0.9}})
     batch = await execute_layers(
         seed_structural=[_ParentWithSemanticChild],
         seed_semantic=[],
@@ -129,8 +129,8 @@ class _ParentB(BaseStructure):
 async def test_semantic_queued_by_two_parents_runs_once() -> None:
     llm = _LLM(
         {
-            "Parent A pulls in shared semantic.": {"v": "a", "_confidence": 0.9},
-            "Parent B pulls in shared semantic.": {"v": "b", "_confidence": 0.9},
+            "Parent A pulls in shared semantic.": {"v": "a", "extraction_confidence": 0.9},
+            "Parent B pulls in shared semantic.": {"v": "b", "extraction_confidence": 0.9},
         }
     )
     batch = await execute_layers(
@@ -181,9 +181,9 @@ class _DiamondRight(BaseStructure):
 async def test_structural_diamond_dedupes_shared_leaf() -> None:
     llm = _LLM(
         {
-            "Left arm emits the shared leaf.": {"left": "L", "_confidence": 0.9},
-            "Right arm emits the shared leaf.": {"right": "R", "_confidence": 0.9},
-            "Shared leaf node.": {"w": "shared", "_confidence": 0.9},
+            "Left arm emits the shared leaf.": {"left": "L", "extraction_confidence": 0.9},
+            "Right arm emits the shared leaf.": {"right": "R", "extraction_confidence": 0.9},
+            "Shared leaf node.": {"w": "shared", "extraction_confidence": 0.9},
         }
     )
     batch = await execute_layers(
@@ -228,8 +228,11 @@ async def test_extend_targeting_already_processed_schema_is_skipped() -> None:
     # already in ``seen_structural`` by the time the re-emitter calls extend().
     llm = _LLM(
         {
-            "Schema that re-emits its sibling on extend()": {"y": "y", "_confidence": 0.9},
-            "Leaf declared on both sides": {"z": "z", "_confidence": 0.9},
+            "Schema that re-emits its sibling on extend()": {
+                "y": "y",
+                "extraction_confidence": 0.9,
+            },
+            "Leaf declared on both sides": {"z": "z", "extraction_confidence": 0.9},
         }
     )
     batch = await execute_layers(

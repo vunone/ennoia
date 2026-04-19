@@ -13,6 +13,7 @@ __all__ = [
     "BaseCollection",
     "BaseSemantic",
     "BaseStructure",
+    "get_schema_default_confidence",
     "get_schema_extensions",
     "get_schema_max_iterations",
     "get_schema_namespace",
@@ -74,6 +75,30 @@ def get_schema_max_iterations(cls: type) -> int | None:
     return value
 
 
+def get_schema_default_confidence(cls: type) -> float:
+    """Return ``cls.Schema.default_confidence`` or ``1.0`` when unset.
+
+    Used as the fallback when the LLM omits ``extraction_confidence`` from its
+    output. Accepts ``int | float`` and coerces to ``float``; raises
+    ``TypeError`` / ``ValueError`` for other types or values outside [0.0, 1.0].
+    """
+    schema = getattr(cls, "Schema", None)
+    if schema is None:
+        return 1.0
+    value = getattr(schema, "default_confidence", 1.0)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(
+            f"{cls.__name__}.Schema.default_confidence must be int or float, "
+            f"got {type(value).__name__}."
+        )
+    result = float(value)
+    if not 0.0 <= result <= 1.0:
+        raise ValueError(
+            f"{cls.__name__}.Schema.default_confidence must be in [0.0, 1.0], got {result}."
+        )
+    return result
+
+
 def _clean_docstring(obj: type) -> str:
     doc = obj.__dict__.get("__doc__")
     if not doc:
@@ -84,14 +109,32 @@ def _clean_docstring(obj: type) -> str:
     return doc.strip()
 
 
+def _resolve_confidence(instance: BaseModel) -> float:
+    """Read ``extraction_confidence`` from the instance's extras, else fall back.
+
+    Shared helper for the identical :attr:`BaseStructure.confidence` and
+    :attr:`BaseCollection.confidence` properties. Reading
+    ``__pydantic_extra__`` directly means a user-declared ``confidence`` field
+    cannot shadow the property.
+    """
+    extras = instance.__pydantic_extra__ or {}
+    value = extras.get("extraction_confidence")
+    if not isinstance(value, bool) and isinstance(value, int | float):
+        numeric = float(value)
+        if 0.0 <= numeric <= 1.0:
+            return numeric
+    return get_schema_default_confidence(type(instance))
+
+
 class BaseStructure(BaseModel):
     """Base class for structured extraction schemas.
 
     Subclasses declare fields whose types drive validation and filter-operator
     inference. The subclass docstring is the extraction prompt passed to the
-    LLM. ``model_config`` allows extra fields so the extractor can retain a
-    trailing ``_confidence`` value on the instance for ``extend()`` to consult
-    without polluting the static JSON schema.
+    LLM. ``model_config`` allows extra fields so the extractor can retain the
+    trailing ``extraction_confidence`` value on the instance for ``extend()``
+    to consult (via the ``self.confidence`` property) without polluting the
+    static JSON schema.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -111,10 +154,13 @@ class BaseStructure(BaseModel):
           prefix ``{namespace}__``; otherwise fields merge flat.
         - ``extensions``: the complete list of classes ``extend()`` may return.
           Enforced at runtime — undeclared emissions raise ``SchemaError``.
+        - ``default_confidence``: fallback returned by ``self.confidence`` when
+          the LLM omits ``extraction_confidence`` or emits an invalid value.
         """
 
         namespace: ClassVar[str | None] = None
         extensions: ClassVar[list[type]] = []
+        default_confidence: ClassVar[float] = 1.0
 
     @classmethod
     def extract_prompt(cls) -> str:
@@ -137,14 +183,19 @@ class BaseStructure(BaseModel):
                 fields.append(record)
         return {"name": cls.__name__, "fields": fields}
 
+    @property
+    def confidence(self) -> float:
+        """LLM self-reported confidence, or :attr:`Schema.default_confidence`."""
+        return _resolve_confidence(self)
+
     def extend(self) -> list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]]:
         """Return additional schemas to apply after this one is extracted.
 
         The pipeline calls ``extend()`` on the populated instance and queues
         the returned schemas (structural, semantic, or collection) for further
         extraction against the same document. The parent instance's extracted
-        values — including ``_confidence`` — are available via ``self``. This
-        is the sole mechanism for inter-schema dependencies.
+        values — including ``self.confidence`` — are available via ``self``.
+        This is the sole mechanism for inter-schema dependencies.
 
         Default: no extension.
         """
@@ -195,11 +246,14 @@ class BaseCollection(BaseModel):
           no-new-unique-items for termination.
         - ``namespace``: present for parity with :class:`BaseStructure`, but has
           no persistence effect — collections don't contribute tabular fields.
+        - ``default_confidence``: fallback returned by ``self.confidence`` when
+          the LLM omits ``extraction_confidence`` for an entity.
         """
 
         namespace: ClassVar[str | None] = None
         extensions: ClassVar[list[type]] = []
         max_iterations: ClassVar[int | None] = None
+        default_confidence: ClassVar[float] = 1.0
 
     @classmethod
     def extract_prompt(cls) -> str:
@@ -208,6 +262,11 @@ class BaseCollection(BaseModel):
     @classmethod
     def json_schema(cls) -> dict[str, Any]:
         return cls.model_json_schema()
+
+    @property
+    def confidence(self) -> float:
+        """LLM self-reported confidence, or :attr:`Schema.default_confidence`."""
+        return _resolve_confidence(self)
 
     def is_valid(self) -> None:
         """Validate this entity. Raise :class:`SkipItem` to drop just this one.

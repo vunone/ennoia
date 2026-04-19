@@ -22,7 +22,7 @@ class Doc(BaseStructure):
 
 class FakeLLM(LLMAdapter):
     async def complete_json(self, prompt: str) -> dict[str, Any]:
-        return {"value": "x", "_confidence": 0.9}
+        return {"value": "x", "extraction_confidence": 0.9}
 
     async def complete_text(self, prompt: str) -> str:
         return ""

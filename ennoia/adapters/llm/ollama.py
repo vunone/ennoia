@@ -10,6 +10,21 @@ from ennoia.utils.imports import require_module
 __all__ = ["OllamaAdapter"]
 
 
+async def _aclose_ollama_client(client: Any) -> None:
+    """Close the httpx transport backing an ``ollama.AsyncClient``.
+
+    Unlike :class:`openai.AsyncOpenAI` / :class:`anthropic.AsyncAnthropic`,
+    ``ollama.AsyncClient`` does not expose ``__aenter__`` / ``close`` —
+    the httpx client is composed as ``client._client`` and must be closed
+    directly. Without this the transport leaks and httpx's GC finalizer
+    schedules ``aclose()`` on an already-closed event loop (producing
+    ``RuntimeError: Event loop is closed`` at process exit).
+    """
+    inner = getattr(client, "_client", None)
+    if inner is not None:
+        await inner.aclose()
+
+
 class OllamaAdapter(LLMAdapter):
     """Adapter for a locally running Ollama instance.
 
@@ -35,18 +50,24 @@ class OllamaAdapter(LLMAdapter):
 
     async def complete_json(self, prompt: str) -> dict[str, Any]:
         client = self._new_client()
-        response = await client.chat(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            format="json",
-        )
+        try:
+            response = await client.chat(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                format="json",
+            )
+        finally:
+            await _aclose_ollama_client(client)
         content = response["message"]["content"]
         return parse_json_object(content, "Ollama")
 
     async def complete_text(self, prompt: str) -> str:
         client = self._new_client()
-        response = await client.chat(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        try:
+            response = await client.chat(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        finally:
+            await _aclose_ollama_client(client)
         return str(response["message"]["content"])

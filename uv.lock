@@ -981,7 +981,7 @@ wheels = [
 
 [[package]]
 name = "ennoia"
-version = "0.3.1"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1079,6 +1079,9 @@ ollama = [
 openai = [
     { name = "openai" },
 ]
+openrouter = [
+    { name = "openai" },
+]
 pgvector = [
     { name = "asyncpg" },
     { name = "pgvector" },
@@ -1105,8 +1108,9 @@ requires-dist = [
     { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.5" },
     { name = "datasets", marker = "extra == 'benchmark'", specifier = ">=2.20,<4" },
     { name = "ennoia", extras = ["all"], marker = "extra == 'dev'" },
-    { name = "ennoia", extras = ["ollama", "openai", "anthropic", "sentence-transformers", "filesystem", "cli", "qdrant", "pgvector", "server", "benchmark"], marker = "extra == 'all'" },
+    { name = "ennoia", extras = ["ollama", "openai", "anthropic", "openrouter", "sentence-transformers", "filesystem", "cli", "qdrant", "pgvector", "server", "benchmark"], marker = "extra == 'all'" },
     { name = "ennoia", extras = ["openai"], marker = "extra == 'benchmark'" },
+    { name = "ennoia", extras = ["openai"], marker = "extra == 'openrouter'" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
     { name = "fastmcp", marker = "extra == 'server'", specifier = ">=2.0" },
     { name = "httpx", marker = "extra == 'server'", specifier = ">=0.27" },
@@ -1139,7 +1143,7 @@ requires-dist = [
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.30" },
 ]
-provides-extras = ["ollama", "openai", "anthropic", "sentence-transformers", "filesystem", "cli", "qdrant", "pgvector", "server", "docs", "benchmark", "all", "dev"]
+provides-extras = ["ollama", "openai", "anthropic", "openrouter", "sentence-transformers", "filesystem", "cli", "qdrant", "pgvector", "server", "docs", "benchmark", "all", "dev"]
 
 [[package]]
 name = "exceptiongroup"

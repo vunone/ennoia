@@ -8,6 +8,7 @@ regardless of which structured backend is mounted.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from ennoia.index.exceptions import FilterValidationError
@@ -29,11 +30,17 @@ def validate_filters(
     contains every reachable structural field (flat or namespaced) with its
     merged operator list. Raises :class:`FilterValidationError` on the first
     offending entry.
+
+    Filter values must be scalars (or lists for ``in``/``contains_all``/
+    ``contains_any``). Mapping values are a sign the caller used the nested
+    ``{field: {op: value}}`` form instead of the canonical flat
+    ``{field__op: value}`` convention and are rejected loudly so agents can
+    self-correct, rather than matching zero rows silently.
     """
     if not filters:
         return
 
-    for key in filters:
+    for key, value in filters.items():
         field_name, operator = split_filter_key(key)
 
         if field_name not in superschema.fields:
@@ -55,5 +62,16 @@ def validate_filters(
                 message=(
                     f"Field {field_name!r} (type: {type_label}) does not support operator "
                     f"{operator!r}. Supported operators: {', '.join(supported)}."
+                ),
+            )
+
+        if isinstance(value, Mapping):
+            raise FilterValidationError(
+                field=field_name,
+                operator=operator,
+                message=(
+                    f"Filter value for {key!r} must be a scalar, not a mapping. "
+                    f"Use the flat convention {{'{field_name}__<operator>': <value>}}, "
+                    f"e.g. {{'{field_name}__{operator}': <value>}}."
                 ),
             )

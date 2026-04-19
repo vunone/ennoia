@@ -19,9 +19,19 @@ replacing naive chunk-and-embed with structured, queryable indices.
 pip install "ennoia[ollama,sentence-transformers,cli]"
 ```
 
-Available extras: `ollama`, `openai`, `anthropic`, `sentence-transformers`,
-`filesystem` (Parquet + NumPy stores), `cli` (`ennoia` CLI), `qdrant`,
-`pgvector`, `server` (REST + MCP), `all` (everything above).
+The full extras matrix (kept in sync with [README.md](https://github.com/vunone/ennoia#install) and the [Quickstart](quickstart.md)):
+
+| Extra | Adds |
+|---|---|
+| `openai`, `anthropic`, `openrouter` | Hosted LLM adapters |
+| `ollama` | Local LLM adapter |
+| `sentence-transformers` | Local embedding adapter |
+| `filesystem` | Parquet + NumPy persistent stores |
+| `qdrant` | Qdrant vector + hybrid store |
+| `pgvector` | PostgreSQL + pgvector hybrid store |
+| `cli` | `ennoia` command |
+| `server` | FastAPI REST + FastMCP |
+| `all` | Everything above |
 
 ## Where to go next
 
@@ -31,7 +41,7 @@ Available extras: `ollama`, `openai`, `anthropic`, `sentence-transformers`,
   `extend()`, the superschema manifest.
 - [Filter language](filters.md) — the unified operator table shared by
   SDK, CLI, REST, and MCP.
-- [CLI](cli.md) — `ennoia try | index | search | api | mcp`.
+- [CLI](cli.md) — `ennoia init | craft | try | index | search | api | mcp` with `ennoia.ini` project config.
 - [Adapters](adapters.md) — built-in LLM and embedding backends plus
   the ABCs for custom ones.
 - [Stores](stores.md) — in-memory, SQLite, filesystem, Qdrant,
@@ -40,7 +50,7 @@ Available extras: `ollama`, `openai`, `anthropic`, `sentence-transformers`,
 - [Testing](testing.md) — `ennoia.testing` mocks and pytest fixtures.
 - [API reference](api-reference.md) — rendered from docstrings.
 - [Cookbook: MCP agent loop](cookbook/mcp-agent.md) — a worked agent
-  discover → filter → search → retrieve example.
+  discover → search → retrieve example.
 - [Cookbook: Custom adapters and stores](cookbook/custom-adapter.md) —
   implementation patterns for your own LLM, embedding, or hybrid store.
 

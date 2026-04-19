@@ -1,17 +1,19 @@
-"""Ennoia DDI+RAG pipeline driven by an agentic tool loop.
+"""Ennoia DDI+agentic pipeline for product recommendation.
 
 The LLM is given three tools that mirror Ennoia's public surface:
 
-- ``get_search_schema()`` — wraps :func:`ennoia.schema.describe` so the agent
-  can inspect which structural fields and semantic indices exist.
-- ``search(query, filter, limit)`` — single-call filter+vector search, mapped
-  onto :meth:`ennoia.Pipeline.asearch` with ``filters=`` (the one-shot flow).
-- ``get_full(document_id)`` — escape hatch mapped onto
-  :meth:`ennoia.Pipeline.aretrieve`; the system prompt instructs the agent to
-  only call it when the search hits lack enough detail for a precise answer.
+- ``get_search_schema()`` — wraps :func:`ennoia.schema.describe` so the
+  agent can inspect which structural fields and semantic indices exist.
+- ``search(query, filter)`` — single-call filter+vector search, mapped
+  onto :meth:`ennoia.Pipeline.asearch`. Always returns up to
+  ``RETRIEVAL_TOP_K`` hits (benchmark-fixed, not agent-configurable) so
+  every pipeline is measured at the same cutoff.
+- ``get_full(document_id)`` — fetches the full original product record
+  for a given ``source_id`` returned by ``search``. Lets the agent
+  confirm a candidate against the unredacted document before answering.
 
-Recall@k is measured over the ordered, deduplicated union of ``source_id``s
-returned by every ``search`` call the agent made during the loop.
+Precision@k is measured over the ordered, deduplicated union of
+``source_id``s returned by every ``search`` call the agent made.
 """
 
 from __future__ import annotations
@@ -21,43 +23,26 @@ import json
 import os
 from typing import Any
 
-from openai import APIConnectionError, APITimeoutError
 from tqdm.asyncio import tqdm_asyncio
 
 from benchmark.config import (
     AGENT_SYSTEM_PROMPT,
     GEN_TIMEOUT_SEC,
-    INDEX_CONCURRENCY,
     MAX_AGENT_ITERATIONS,
     MODEL_EMBED,
-    MODEL_GEN,
-    OLLAMA_HOST,
+    MODEL_LLM,
     RETRIEVAL_TOP_K,
+    THREADS,
 )
-from benchmark.data.loader import Contract, Question
+from benchmark.data.prep import Product
+from benchmark.pipelines._retry import async_with_retry
 from benchmark.pipelines.base import PipelineRun
-from benchmark.pipelines.schemas import (
-    ClauseInventory,
-    ClauseMention,
-    ContractMeta,
-    ContractOverview,
-)
+from benchmark.pipelines.schemas import ProductMeta, ProductSummary
 from ennoia import Pipeline as EnnoiaCorePipeline
-from ennoia.adapters.embedding.sentence_transformers import SentenceTransformerEmbedding
-from ennoia.adapters.llm.ollama import OllamaAdapter
+from ennoia.adapters.embedding.openai import OpenAIEmbedding
+from ennoia.adapters.llm.openrouter import OpenRouterAdapter
 from ennoia.schema import describe
 from ennoia.store import InMemoryStructuredStore, InMemoryVectorStore, Store
-
-# Per-contract indexing hits the LLM for every extraction schema, so a
-# flaky connection can drop a double-digit slice of the corpus before the
-# final chart is drawn. Retry transient network errors (connection resets,
-# read timeouts) with linear backoff — persistent failures still surface
-# to the caller unchanged. 6 total attempts with linear backoff
-# ``initial * attempt`` (so 0s, 1s, 2s, 3s, 4s between attempts — 10s
-# worst-case added delay for a contract that ultimately still fails).
-_INDEX_RETRY_ATTEMPTS = 6
-_INDEX_RETRY_INITIAL_BACKOFF_SEC = 1.0
-_INDEX_RETRYABLE_EXC: tuple[type[BaseException], ...] = (APIConnectionError, APITimeoutError)
 
 _TOOLS_SPEC: list[dict[str, Any]] = [
     {
@@ -65,9 +50,9 @@ _TOOLS_SPEC: list[dict[str, Any]] = [
         "function": {
             "name": "get_search_schema",
             "description": (
-                "Return the searchable schema: structural fields with their types "
-                "and allowed operators, plus semantic indices with descriptions. "
-                "Call this FIRST before any search to learn which filters are valid."
+                "Return the searchable schema: structural fields with their "
+                "types and allowed operators, plus semantic indices with "
+                "descriptions. Call this FIRST before any search."
             ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
@@ -77,10 +62,12 @@ _TOOLS_SPEC: list[dict[str, Any]] = [
         "function": {
             "name": "search",
             "description": (
-                "Run a filtered vector search. Provide a semantic query string and "
-                "(optionally) a structural filter built from the fields returned by "
-                "get_search_schema. Returns up to `limit` hits with source_id, score, "
-                "the structural record, and the best-matching semantic snippet."
+                "Run a filtered vector search over the product catalogue. "
+                "Provide a semantic query and (optionally) a structural "
+                "filter built from fields returned by get_search_schema "
+                "(e.g. brand, category, product_type). Returns up to 10 "
+                "hits with source_id (= docid), score, structural record, "
+                "and best-matching semantic snippet."
             ),
             "parameters": {
                 "type": "object",
@@ -92,17 +79,15 @@ _TOOLS_SPEC: list[dict[str, Any]] = [
                     "filter": {
                         "type": "object",
                         "description": (
-                            "Structural filter dict (e.g. "
-                            '{"clauses_present__contains": "ip_licensing"}). Use {} '
-                            "or omit for no structural filter."
+                            "Structural filter dict using the FLAT "
+                            "'<field>__<operator>' key convention, e.g. "
+                            '{"brand__eq": "ASUS", "price_usd__lt": 80}. '
+                            "The nested form {field: {op: value}} is "
+                            "REJECTED with FilterValidationError. "
+                            "Supported operators per field come from "
+                            "get_search_schema. Use {} or omit for no filter."
                         ),
                         "additionalProperties": True,
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of hits to return.",
-                        "minimum": 1,
-                        "maximum": 25,
                     },
                 },
                 "required": ["query"],
@@ -115,18 +100,17 @@ _TOOLS_SPEC: list[dict[str, Any]] = [
         "function": {
             "name": "get_full",
             "description": (
-                "Fetch the FULL structured record for a single source_id. Call "
-                "this on the top search hit once it plausibly matches the "
-                "question's target contract — the full record is what supports "
-                "a precise extractive answer. Skip only if no hit plausibly "
-                "matches (then reply NOT_FOUND)."
+                "Fetch the full original product record by source_id "
+                "(returned from a prior search hit). Use to confirm a "
+                "candidate against the unredacted document before "
+                "answering."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "The source_id returned by a prior search hit.",
+                        "description": "source_id from a prior search hit.",
                     },
                 },
                 "required": ["document_id"],
@@ -137,89 +121,93 @@ _TOOLS_SPEC: list[dict[str, Any]] = [
 ]
 
 
+def _product_text(product: Product) -> str:
+    """Render a ``Product`` into the flat text blob the extractor sees."""
+    parts: list[str] = [product["title"]]
+    if product["brand"] and product["brand"] != "unknown":
+        parts.append(f"Brand: {product['brand']}")
+    if product["color"] and product["color"] != "unknown":
+        parts.append(f"Color: {product['color']}")
+    # ``Price: $X`` is the anchor ProductMeta.price_usd reads from; keep the
+    # literal format stable so the extraction prompt continues to match.
+    parts.append(f"Price: ${product['price_usd']}")
+    if product["text"]:
+        parts.append(product["text"])
+    if product["bullet_points"]:
+        parts.append("\n".join(f"- {b}" for b in product["bullet_points"]))
+    return "\n\n".join(parts)
+
+
 class EnnoiaPipeline:
     name = "ennoia"
 
     def __init__(
         self,
-        gen_model: str = MODEL_GEN,
+        gen_model: str = MODEL_LLM,
         embed_model: str = MODEL_EMBED,
-        concurrency: int = INDEX_CONCURRENCY,
+        threads: int = THREADS,
         max_iterations: int = MAX_AGENT_ITERATIONS,
     ) -> None:
         self._pipeline = EnnoiaCorePipeline(
-            schemas=[ContractMeta, ClauseInventory, ContractOverview, ClauseMention],
+            schemas=[ProductMeta, ProductSummary],
             store=Store(
                 vector=InMemoryVectorStore(),
                 structured=InMemoryStructuredStore(),
             ),
-            llm=OllamaAdapter(model=gen_model, host=OLLAMA_HOST, timeout=GEN_TIMEOUT_SEC),
-            embedding=SentenceTransformerEmbedding(model=embed_model),
-            concurrency=concurrency,
+            llm=OpenRouterAdapter(model=gen_model, timeout=GEN_TIMEOUT_SEC),
+            embedding=OpenAIEmbedding(model=embed_model),
+            concurrency=threads,
         )
         self._gen_model = gen_model
+        self._threads = threads
         self._max_iterations = max_iterations
-        # Lazy-imported inside ``answer`` so tests can monkeypatch the factory
-        # before the first call; kept as an attribute for that hook. The
-        # agent loop still drives an OpenAI-shaped client — we point it at
-        # Ollama's OpenAI-compatible endpoint so the tool-calling surface
-        # stays identical to the prior run.
-        self._client_factory = _default_openai_client
+        # Lazy-imported inside ``answer`` so tests can monkeypatch the
+        # factory. The agent loop drives an OpenAI-shaped client pointed at
+        # OpenRouter's OpenAI-compatible endpoint.
+        self._client_factory = _default_openrouter_client
 
-    async def index_corpus(self, contracts: list[Contract]) -> None:
-        outer = asyncio.Semaphore(INDEX_CONCURRENCY)
+    async def index_corpus(self, products: list[Product]) -> None:
+        outer = asyncio.Semaphore(self._threads)
         failures: list[tuple[str, str]] = []
 
-        async def index_one(contract: Contract) -> None:
+        async def index_one(product: Product) -> None:
             async with outer:
                 try:
-                    await self._aindex_with_retry(contract)
+                    await self._aindex_with_retry(product)
                 except Exception as exc:
-                    failures.append((contract["source_id"], f"{type(exc).__name__}: {exc}"))
+                    failures.append((product["docid"], f"{type(exc).__name__}: {exc}"))
 
         await tqdm_asyncio.gather(
-            *(index_one(c) for c in contracts),
+            *(index_one(p) for p in products),
             desc="ennoia index",
-            unit="doc",
+            unit="product",
         )
         if failures:
-            print(f"[ennoia] {len(failures)}/{len(contracts)} contracts failed to index:")
-            for source_id, reason in failures[:10]:
-                print(f"[ennoia]   - {source_id}: {reason}")
+            print(f"[ennoia] {len(failures)}/{len(products)} products failed to index:")
+            for docid, reason in failures[:10]:
+                print(f"[ennoia]   - {docid}: {reason}")
             if len(failures) > 10:
                 print(f"[ennoia]   ... and {len(failures) - 10} more")
 
-    async def _aindex_with_retry(self, contract: Contract) -> None:
-        """Call the underlying pipeline's aindex with retry-on-transient.
+    async def _aindex_with_retry(self, product: Product) -> None:
+        text = _product_text(product)
+        docid = product["docid"]
 
-        Retries only transient network errors from the OpenAI SDK
-        (``APIConnectionError``, ``APITimeoutError``). Any other exception
-        propagates on the first attempt — this is not a general-purpose
-        retry; it is a poor-connection shim around the extraction calls.
-        """
-        for attempt in range(_INDEX_RETRY_ATTEMPTS):
-            try:
-                await self._pipeline.aindex(
-                    text=contract["text"],
-                    source_id=contract["source_id"],
-                )
-                return
-            except _INDEX_RETRYABLE_EXC as exc:
-                if attempt == _INDEX_RETRY_ATTEMPTS - 1:
-                    raise
-                backoff = _INDEX_RETRY_INITIAL_BACKOFF_SEC * (attempt)
-                print(
-                    f"[ennoia] transient {type(exc).__name__} on "
-                    f"{contract['source_id']} (attempt {attempt + 1}/"
-                    f"{_INDEX_RETRY_ATTEMPTS}); retrying in {backoff:.1f}s"
-                )
-                await asyncio.sleep(backoff)
+        def _on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+            print(
+                f"[ennoia] {type(exc).__name__} on {docid} "
+                f"(attempt {attempt + 1}); waiting {delay:.1f}s"
+            )
 
-    async def answer(self, question: Question) -> PipelineRun:
-        client = self._client_factory()
+        await async_with_retry(
+            lambda: self._pipeline.aindex(text=text, source_id=docid),
+            on_retry=_on_retry,
+        )
+
+    async def answer(self, query: str) -> PipelineRun:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-            {"role": "user", "content": question["question"]},
+            {"role": "user", "content": query},
         ]
         retrieved_ids: list[str] = []
         trace: list[dict[str, Any]] = []
@@ -227,56 +215,60 @@ class EnnoiaPipeline:
         completion_tokens = 0
         final_answer = "NOT_FOUND"
 
-        for iteration in range(self._max_iterations):
-            is_last = iteration == self._max_iterations - 1
-            response = await client.chat.completions.create(
-                model=self._gen_model,
-                messages=messages,
-                tools=_TOOLS_SPEC,
-                tool_choice="none" if is_last else "auto",
-            )
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-
-            message = response.choices[0].message
-            tool_calls = getattr(message, "tool_calls", None) or []
-            if not tool_calls:
-                final_answer = (message.content or "").strip() or "NOT_FOUND"
-                break
-
-            messages.append(_assistant_message_dict(message))
-            for call in tool_calls:
-                name = call.function.name
-                raw_args = call.function.arguments or "{}"
-                try:
-                    args = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    args = {}
-                result = await self._dispatch_tool(name, args, retrieved_ids)
-                trace.append({"iteration": iteration, "tool": name, "args": args})
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": json.dumps(result, default=str),
-                    }
+        # ``async with`` closes the underlying httpx transport when ``answer``
+        # returns — otherwise the GC finalizer schedules ``aclose()`` on the
+        # outer event loop after it's already closed, producing noisy
+        # ``RuntimeError: Event loop is closed`` tracebacks at shutdown.
+        async with self._client_factory() as client:
+            for iteration in range(self._max_iterations):
+                is_last = iteration == self._max_iterations - 1
+                response = await client.chat.completions.create(
+                    model=self._gen_model,
+                    messages=messages,
+                    tools=_TOOLS_SPEC,
+                    tool_choice="none" if is_last else "auto",
                 )
-        else:
-            # Loop exhausted without a no-tool-call message; force a final
-            # answer turn with tool_choice="none" so we always get something
-            # to judge.
-            forced = await client.chat.completions.create(
-                model=self._gen_model,
-                messages=messages,
-                tool_choice="none",
-            )
-            usage = getattr(forced, "usage", None)
-            if usage is not None:
-                prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-            final_answer = (forced.choices[0].message.content or "").strip() or "NOT_FOUND"
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+                    completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+
+                message = response.choices[0].message
+                tool_calls = getattr(message, "tool_calls", None) or []
+                if not tool_calls:
+                    final_answer = (message.content or "").strip() or "NOT_FOUND"
+                    break
+
+                messages.append(_assistant_message_dict(message))
+                for call in tool_calls:
+                    name = call.function.name
+                    raw_args = call.function.arguments or "{}"
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = await self._dispatch_tool(name, args, retrieved_ids)
+                    trace.append({"iteration": iteration, "tool": name, "args": args})
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": json.dumps(result, default=str),
+                        }
+                    )
+            else:
+                # Loop exhausted without a no-tool-call message; force a final
+                # answer turn with tool_choice="none".
+                forced = await client.chat.completions.create(
+                    model=self._gen_model,
+                    messages=messages,
+                    tool_choice="none",
+                )
+                usage = getattr(forced, "usage", None)
+                if usage is not None:
+                    prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+                    completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+                final_answer = (forced.choices[0].message.content or "").strip() or "NOT_FOUND"
 
         return PipelineRun(
             retrieved_source_ids=retrieved_ids,
@@ -300,10 +292,10 @@ class EnnoiaPipeline:
             filters: dict[str, Any] | None = (
                 raw_filter if isinstance(raw_filter, dict) and raw_filter else None
             )
-            limit = int(args.get("limit", RETRIEVAL_TOP_K))
-            limit = max(1, min(limit, 25))
             try:
-                result = await self._pipeline.asearch(query=query, filters=filters, top_k=limit)
+                result = await self._pipeline.asearch(
+                    query=query, filters=filters, top_k=RETRIEVAL_TOP_K
+                )
             except Exception as exc:
                 return {"error": f"{type(exc).__name__}: {exc}"}
             hits_payload: list[dict[str, Any]] = []
@@ -329,8 +321,6 @@ class EnnoiaPipeline:
 
 
 def _assistant_message_dict(message: Any) -> dict[str, Any]:
-    """Convert an OpenAI ChatCompletionMessage to the dict form the SDK
-    accepts back as a prior assistant message."""
     tool_calls = []
     for call in message.tool_calls or []:
         tool_calls.append(
@@ -350,15 +340,11 @@ def _assistant_message_dict(message: Any) -> dict[str, Any]:
     }
 
 
-def _default_openai_client() -> Any:
+def _default_openrouter_client() -> Any:
     from openai import AsyncOpenAI
 
-    # Ollama ships an OpenAI-compatible endpoint at `/v1` that accepts the
-    # standard `tools` / `tool_choice` parameters. Re-using AsyncOpenAI here
-    # keeps the agent loop's tool-call parsing identical to the prior run
-    # against the real OpenAI API — no separate code path to maintain.
     return AsyncOpenAI(
-        base_url=f"{OLLAMA_HOST}/v1",
-        api_key=os.environ.get("OLLAMA_API_KEY", "ollama"),
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ.get("OPENROUTER_API_KEY", "missing"),
         timeout=GEN_TIMEOUT_SEC,
     )

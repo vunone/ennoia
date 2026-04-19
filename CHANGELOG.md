@@ -5,10 +5,103 @@ All notable changes to Ennoia are documented here. The format is based on
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v0.1.0 onward.
 
-## Unreleased
+## [0.4.0] — 2026-04-19
+
+### Fixed
+
+- **Nested filter values are no longer silently swallowed.**
+  `Pipeline.search()` now raises `FilterValidationError` when a filter
+  value is a mapping (e.g. `{"price_usd": {"lt": 80}}`), with a message
+  that shows the flat-form rewrite (`{"price_usd__lt": 80}`). Previously
+  the nested form was treated as an equality comparison against a dict,
+  which always matched zero rows — so agents that picked the
+  Elasticsearch/MongoDB-style syntax appeared to search successfully but
+  retrieved nothing. Surfaced by the ESCI benchmark, where Gemma's
+  nested price filters collapsed the medium-band ennoia run.
+- **Benchmark `search` tool no longer lets the agent pick `limit`.**
+  The `search` tool in `benchmark/pipelines/ennoia_pipeline.py` now
+  always returns up to `RETRIEVAL_TOP_K` (10) hits to match the
+  LangChain baseline; weak models were routinely picking `limit: 5`,
+  which capped precision@10 at 0.1 even when the filter worked.
+
+### Changed
+
+- **Benchmark reworked: CUAD → ESCI product discovery.** The
+  `benchmark/` harness now compares the Ennoia DDI agent loop against a
+  naive one-embedding-per-product LangChain baseline on a sampled slice
+  of `spacemanidol/ESCI-product-dataset-corpus-us`. LLM (gen + judge)
+  runs on OpenRouter's free `google/gemma-4-26b-a4b-it:free`; embedder
+  is OpenAI `text-embedding-3-small`. A prep script (`python -m
+  benchmark.data.prep`) downloads a seeded slice of the corpus and
+  LLM-generates three shopper-style query variants per product
+  (`broad` / `medium` / `high`), with price mentions forbidden and
+  post-checked. The runner (`python -m benchmark.runner --threads N
+  --chart`) renders a three-panel chart of precision@k + judge verdicts
+  per difficulty band. DDI schemas: `ProductMeta` (brand / color /
+  category / product_type), `ProductSummary`, `ProductFeatures`
+  (one row per bullet). The new bundled prompt
+  `ennoia/prompts/benchmark_queries.md` drives query generation. All
+  CUAD identity-reformulation / clause-taxonomy / Ollama scaffolding is
+  removed.
 
 ### Added
 
+- **`ennoia.ini` config file + `ennoia init` command.** A new
+  `[ennoia]` section supplies defaults for `--llm`, `--embedding`,
+  `--store`, `--schema`, `--collection`, `--qdrant-url`,
+  `--qdrant-api-key`, `--pg-dsn`, `--host`, `--port`, `--transport`,
+  and `--api-key`; a `[env]` section exports provider keys
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …) via
+  `os.environ.setdefault` before adapter clients initialize. Explicit
+  CLI flags and shell-exported env vars always override the file.
+  `ennoia init` writes a commented template; `--config <path>` /
+  `--no-config` override the auto-load. See
+  [docs/cli.md#configuration-via-ennoiaini](docs/cli.md).
+- **`self.confidence` property + `Schema.default_confidence`.**
+  `BaseStructure` and `BaseCollection` expose a read-only `confidence`
+  property that returns the LLM's self-reported value when present, or
+  `self.Schema.default_confidence` (defaulting to `1.0`) when the model
+  omitted the field or emitted something invalid. Subclasses override
+  the per-schema default via the inner `class Schema`. `extend()`
+  consumers should read `self.confidence` instead of the (now removed)
+  `self._confidence` attribute. New helper
+  `get_schema_default_confidence(cls)` parallels the existing
+  `get_schema_namespace` / `get_schema_extensions` /
+  `get_schema_max_iterations` helpers.
+- **MCP server-level instructions.** `create_mcp` now registers a
+  `FastMCP(instructions=…)` block that briefs the LLM on the canonical
+  `discover_schema → search → retrieve` call order and the filter
+  grammar. MCP clients surface it to the model alongside the tool list,
+  so an agent has the retrieval playbook before its first tool call.
+  Per-tool docstrings were also rewritten as LLM-facing prompts
+  (when-to-use, example, error shape) rather than terse API summaries.
+- **`ennoia craft` CLI subcommand** — LLM-driven schema scaffolding from
+  a sample document. Given `--task` ("filter products by price / colour")
+  and a document path, an LLM emits a fixed three-class skeleton —
+  `Metadata(BaseStructure)` with 5–10 plain filterable fields (no
+  `Literal`, no `Optional`, no `list` — a human tightens those later
+  once the value space is known), `QuestionAnswer(BaseCollection)` with
+  `max_iterations = 1` generating ten Q&A pairs per document for
+  semantic search, and `Summary(BaseSemantic)` for a one-sentence
+  overview. If the output file exists, its current contents are passed
+  through so the LLM *improves* the draft instead of rewriting it. Each
+  attempt is validated by importing the file; on failure the traceback
+  is fed back to the LLM with a `--max-retries` budget (default 2).
+  Ships a bundled authoring guide at `ennoia/prompts/craft.md` — loaded
+  via `importlib.resources`, not a public doc. Provider context-length
+  errors surface with an actionable hint; Ennoia does not chunk the
+  document — pick a model whose window fits it.
+  **Prototype only:** the command emits a banner on start and after
+  completion explicitly marking the output as a first draft. Tighten
+  types, rename fields, and refine docstrings before running
+  `ennoia index` on real data.
+- **`ennoia.prompts` package** — tiny loader (`load_prompt("name")`) for
+  prompt assets shipped with the wheel. Hatch `force-include` keeps
+  non-`.py` assets out of accidental exclusion.
+- **`load_schemas()` recognises `BaseCollection`** — the CLI loader used
+  by `try`, `index`, and `search` now accepts all three extractor kinds,
+  so schemas produced by `ennoia craft` that lean on collections work
+  end-to-end through the rest of the CLI.
 - **`OpenRouterAdapter` + `OpenRouterEmbedding`** — LLM and embedding
   adapters against OpenRouter's OpenAI-compatible API
   (`https://openrouter.ai/api/v1`). `OPENROUTER_API_KEY` environment
@@ -41,6 +134,29 @@ from v0.1.0 onward.
 
 ### Changed
 
+- **BREAKING — self-reported confidence renamed to `extraction_confidence`.**
+  The JSON property the extractor injects for `BaseStructure` and each
+  `BaseCollection` entity is now `extraction_confidence` (was
+  `_confidence`); the semantic trailing tag is now
+  `<extraction_confidence>0.xx</extraction_confidence>` (was
+  `<confidence>`). Leading-underscore names read as "internal" to many
+  models, which encouraged dropping the field precisely when the value
+  would be low. `extend()` callers that read `self._confidence` must
+  migrate to `self.confidence` — no compatibility shim is provided.
+- **`ennoia try` output no longer repeats the scalar per field.**
+  Structural and semantic extractions now print confidence once on the
+  schema header line (`Schema: Doc  (confidence: 0.90)`); per-entity
+  confidence for collections continues to appear on each row. The
+  previous output implied per-field confidence that Ennoia does not
+  produce.
+- **BREAKING — MCP toolset simplified.** The `filter` MCP tool is
+  removed; the `search` tool now takes `filter=` (was: separate `filter`
+  tool + `search(filter_ids=…)`) and runs the two-phase plan internally.
+  New signature: `search(query, filter=None, limit=10, index=None)` —
+  note `top_k` is renamed to `limit`. Rationale: LLM agents consistently
+  struggled to chain the two near-identical tools. The SDK
+  `Pipeline.afilter` method and the REST `POST /filter` endpoint are
+  unaffected.
 - **BREAKING — `HybridStore.upsert` signature.** Replaces
   `vectors: dict[str, list[float]]` with `entries: list[VectorEntry]`,
   where `VectorEntry` captures `(index_name, vector, text, unique)`. The

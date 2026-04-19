@@ -67,11 +67,11 @@ def test_build_collection_schema_wraps_items_with_entities_list_and_is_done():
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"entities_list", "is_done"}
     items = schema["properties"]["entities_list"]["items"]
-    # _confidence is appended per-item, not at top level.
-    assert "_confidence" in items["properties"]
-    assert "_confidence" in items["required"]
-    # Top-level does NOT have _confidence.
-    assert "_confidence" not in schema["properties"]
+    # extraction_confidence is appended per-item, not at top level.
+    assert "extraction_confidence" in items["properties"]
+    assert "extraction_confidence" in items["required"]
+    # Top-level does NOT have extraction_confidence.
+    assert "extraction_confidence" not in schema["properties"]
 
 
 def test_build_collection_prompt_includes_previously_extracted_block():
@@ -103,7 +103,7 @@ async def test_is_done_true_terminates_loop():
         [
             {
                 "entities_list": [
-                    {"name": "Acme", "year": 2024, "_confidence": 0.9},
+                    {"name": "Acme", "year": 2024, "extraction_confidence": 0.9},
                 ],
                 "is_done": True,
             }
@@ -128,11 +128,11 @@ async def test_no_new_unique_items_terminates_loop():
     llm = _ScriptedLLM(
         [
             {
-                "entities_list": [{"name": "Acme", "year": 2024, "_confidence": 0.9}],
+                "entities_list": [{"name": "Acme", "year": 2024, "extraction_confidence": 0.9}],
                 "is_done": False,
             },
             {
-                "entities_list": [{"name": "Acme", "year": 2024, "_confidence": 0.9}],
+                "entities_list": [{"name": "Acme", "year": 2024, "extraction_confidence": 0.9}],
                 "is_done": False,
             },
         ]
@@ -146,16 +146,16 @@ async def test_max_iterations_caps_loop():
     llm = _ScriptedLLM(
         [
             {
-                "entities_list": [{"name": "Acme", "_confidence": 0.9}],
+                "entities_list": [{"name": "Acme", "extraction_confidence": 0.9}],
                 "is_done": False,
             },
             {
-                "entities_list": [{"name": "Beta", "_confidence": 0.9}],
+                "entities_list": [{"name": "Beta", "extraction_confidence": 0.9}],
                 "is_done": False,
             },
             # Third iteration should NOT happen because max_iterations=2.
             {
-                "entities_list": [{"name": "Gamma", "_confidence": 0.9}],
+                "entities_list": [{"name": "Gamma", "extraction_confidence": 0.9}],
                 "is_done": False,
             },
         ]
@@ -169,11 +169,11 @@ async def test_iteration_accumulates_across_calls():
     llm = _ScriptedLLM(
         [
             {
-                "entities_list": [{"name": "Acme", "year": 2024, "_confidence": 0.9}],
+                "entities_list": [{"name": "Acme", "year": 2024, "extraction_confidence": 0.9}],
                 "is_done": False,
             },
             {
-                "entities_list": [{"name": "Beta", "year": 2023, "_confidence": 0.8}],
+                "entities_list": [{"name": "Beta", "year": 2023, "extraction_confidence": 0.8}],
                 "is_done": True,
             },
         ]
@@ -195,8 +195,8 @@ async def test_malformed_item_is_silently_dropped():
         [
             {
                 "entities_list": [
-                    {"name": "Acme", "year": 2024, "_confidence": 0.9},
-                    {"name": "Bad", "year": "not-an-int", "_confidence": 0.5},
+                    {"name": "Acme", "year": 2024, "extraction_confidence": 0.9},
+                    {"name": "Bad", "year": "not-an-int", "extraction_confidence": 0.5},
                 ],
                 "is_done": True,
             }
@@ -223,9 +223,9 @@ async def test_skipitem_drops_just_that_entity():
         [
             {
                 "entities_list": [
-                    {"name": "Acme", "_confidence": 0.9},
-                    {"name": "   ", "_confidence": 0.3},
-                    {"name": "Beta", "_confidence": 0.8},
+                    {"name": "Acme", "extraction_confidence": 0.9},
+                    {"name": "   ", "extraction_confidence": 0.3},
+                    {"name": "Beta", "extraction_confidence": 0.8},
                 ],
                 "is_done": True,
             }
@@ -250,7 +250,7 @@ async def test_rejectexception_from_is_valid_propagates():
     llm = _ScriptedLLM(
         [
             {
-                "entities_list": [{"name": "Acme", "_confidence": 0.9}],
+                "entities_list": [{"name": "Acme", "extraction_confidence": 0.9}],
                 "is_done": True,
             }
         ]
@@ -275,11 +275,11 @@ async def test_context_additions_flow_into_prompt():
 # ---------------------------------------------------------------------------
 
 
-async def test_missing_per_item_confidence_defaults_to_one():
+async def test_missing_per_item_confidence_uses_schema_default():
     llm = _ScriptedLLM(
         [
             {
-                "entities_list": [{"name": "Acme", "year": 2024}],  # no _confidence
+                "entities_list": [{"name": "Acme", "year": 2024}],  # no extraction_confidence
                 "is_done": True,
             }
         ]
@@ -294,7 +294,7 @@ async def test_non_dict_item_entries_are_ignored():
             {
                 "entities_list": [
                     "this should be a dict not a string",
-                    {"name": "Acme", "year": 2024, "_confidence": 0.9},
+                    {"name": "Acme", "year": 2024, "extraction_confidence": 0.9},
                 ],
                 "is_done": True,
             }

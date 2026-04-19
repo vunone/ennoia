@@ -3,17 +3,19 @@
 Confidence plumbing
 -------------------
 
-``_confidence`` is never declared on :class:`BaseStructure`. If it were, it
-would appear at the top of the JSON Schema and bias the LLM into picking a
-score before filling the real fields. Instead, the extractor **dynamically
-appends** ``_confidence`` as the final property of the prompted schema and
-instructs the model to emit it last. This encourages the model to evaluate
-itself *after* generating the extraction.
+``extraction_confidence`` is never declared on :class:`BaseStructure`. If it
+were, it would appear at the top of the JSON Schema and bias the LLM into
+picking a score before filling the real fields. Instead, the extractor
+**dynamically appends** ``extraction_confidence`` as the final property of the
+prompted schema and instructs the model to emit it last. This encourages the
+model to evaluate itself *after* generating the extraction.
 
 ``BaseStructure.model_config = ConfigDict(extra="allow")`` (see
-:mod:`ennoia.schema.base`) allows the returned ``_confidence`` value to ride
-on the validated instance so ``extend()`` can consult it. The Pipeline strips
-it before persistence.
+:mod:`ennoia.schema.base`) lets the returned ``extraction_confidence`` value
+ride on the validated instance so ``extend()`` can consult it via the
+:attr:`~ennoia.schema.base.BaseStructure.confidence` property. The Pipeline
+strips it before persistence. When the LLM omits the field, the property
+falls back to ``Schema.default_confidence`` instead of a hardcoded ``1.0``.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from ennoia.schema.base import (
     BaseCollection,
     BaseSemantic,
     BaseStructure,
+    get_schema_default_confidence,
     get_schema_max_iterations,
 )
 
@@ -50,7 +53,7 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-CONFIDENCE_KEY = "_confidence"
+CONFIDENCE_KEY = "extraction_confidence"
 
 _STRUCTURAL_ROLE = (
     "You are a document structure expert. Your goal is to carefully read the given "
@@ -60,8 +63,9 @@ _STRUCTURAL_ROLE = (
 
 _STRUCTURAL_OUTPUT_FORMAT = (
     "# Output Format\n"
-    "- Respond strictly according to JSON-Schema provided below\n"
+    "- Respond strictly following the JSON-Schema provided below\n"
     "- Emit JSON properties in the exact order shown in the schema\n"
+    "- Do not replicate the JSON-Schema itself, but generate an object matching it\n"
     f"- The `{CONFIDENCE_KEY}` property MUST be the FINAL property in the JSON object, "
     "evaluated only after every other field has been filled — it reflects your confidence "
     "(0.0–1.0) in the extraction as a whole\n"
@@ -80,21 +84,22 @@ _SEMANTIC_OUTPUT_FORMAT = (
     "- Avoid any prose / comments before or after the answer\n"
     "- Do not use any formatting (e.g, markdown)\n"
     "- After your answer, append a single line of the form "
-    "`<confidence>0.xx</confidence>` reporting your confidence (0.0–1.0) in the answer"
+    "`<extraction_confidence>0.xx</extraction_confidence>` reporting your confidence "
+    "(0.0–1.0) in the answer"
 )
 
 _SEMANTIC_CONFIDENCE_RE = re.compile(
-    r"<confidence>\s*([0-9]*\.?[0-9]+)\s*</confidence>\s*$",
+    r"<extraction_confidence>\s*([0-9]*\.?[0-9]+)\s*</extraction_confidence>\s*$",
     re.IGNORECASE,
 )
 
 
 def augment_json_schema_with_confidence(schema: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of ``schema`` with ``_confidence`` appended as the last property.
+    """Return a copy of ``schema`` with ``extraction_confidence`` appended last.
 
     Python dicts preserve insertion order, so appending here guarantees that
     the JSON rendering — and the model's expected emission order — places
-    ``_confidence`` at the end of the object.
+    ``extraction_confidence`` at the end of the object.
     """
     augmented: dict[str, Any] = {k: v for k, v in schema.items() if k != "properties"}
     properties: dict[str, Any] = dict(schema.get("properties", {}))
@@ -147,23 +152,30 @@ def build_semantic_prompt(schema: type[BaseSemantic], document_text: str) -> str
     return "\n\n".join(sections)
 
 
-def _split_confidence(raw: dict[str, Any]) -> tuple[dict[str, Any], float]:
-    """Pop ``_confidence`` from ``raw`` and return ``(raw_without_confidence, confidence)``.
+def _split_confidence(raw: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize ``extraction_confidence`` in-place and return the dict.
 
-    The instance still receives the full dict (``extra="allow"`` keeps the
-    field on the model) so ``extend()`` can read ``self._confidence``. Pipeline
-    strips it again at persistence time.
+    A valid numeric value in ``[0.0, 1.0]`` is kept so ``extra="allow"`` places
+    it on the validated instance for the :attr:`~BaseStructure.confidence`
+    property to consume. A missing key is left missing — the property then
+    falls back to ``Schema.default_confidence``. A present-but-invalid value
+    (non-numeric or out of range) is stripped so garbage does not ride on the
+    instance; the property falls back the same way.
     """
     if CONFIDENCE_KEY not in raw:
-        _log.warning("LLM omitted %s; defaulting confidence to 1.0", CONFIDENCE_KEY)
-        return raw, 1.0
-    value = raw.get(CONFIDENCE_KEY, 1.0)
-    try:
-        confidence = float(value)
-    except (TypeError, ValueError):
-        _log.warning("Non-numeric %s=%r; defaulting confidence to 1.0", CONFIDENCE_KEY, value)
-        confidence = 1.0
-    return raw, max(0.0, min(1.0, confidence))
+        return raw
+    value = raw[CONFIDENCE_KEY]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        _log.warning("Non-numeric %s=%r; using schema default", CONFIDENCE_KEY, value)
+        raw.pop(CONFIDENCE_KEY, None)
+        return raw
+    numeric = float(value)
+    if not 0.0 <= numeric <= 1.0:
+        _log.warning("%s=%r out of [0,1]; using schema default", CONFIDENCE_KEY, value)
+        raw.pop(CONFIDENCE_KEY, None)
+        return raw
+    raw[CONFIDENCE_KEY] = numeric
+    return raw
 
 
 async def extract_structural(
@@ -181,8 +193,8 @@ async def extract_structural(
     prompt = build_structural_prompt(schema, text, context_additions)
     try:
         raw = await llm.complete_json(prompt)
-        raw, confidence = _split_confidence(dict(raw))
-        return schema.model_validate(raw), confidence
+        instance = schema.model_validate(_split_confidence(dict(raw)))
+        return instance, instance.confidence
     except ValidationError as first_err:
         retry_prompt = (
             prompt + "\n\nThe previous JSON failed validation with these errors. "
@@ -190,8 +202,8 @@ async def extract_structural(
         )
         try:
             raw = await llm.complete_json(retry_prompt)
-            raw, confidence = _split_confidence(dict(raw))
-            return schema.model_validate(raw), confidence
+            instance = schema.model_validate(_split_confidence(dict(raw)))
+            return instance, instance.confidence
         except ValidationError as second_err:
             raise ExtractionError(
                 f"Failed to extract {schema.__name__} after retry: {second_err}"
@@ -225,9 +237,9 @@ _COLLECTION_OUTPUT_FORMAT = (
 def build_collection_schema(schema: type[BaseCollection]) -> dict[str, Any]:
     """Build the ``{entities_list, is_done}`` wrapper schema for a collection.
 
-    The item schema is ``schema.json_schema()`` augmented with ``_confidence``
-    as its final property — the same mechanism structural extractions use, but
-    applied per-entity instead of top-level.
+    The item schema is ``schema.json_schema()`` augmented with
+    ``extraction_confidence`` as its final property — the same mechanism
+    structural extractions use, but applied per-entity instead of top-level.
     """
     item_schema = augment_json_schema_with_confidence(schema.json_schema())
     return {
@@ -334,7 +346,7 @@ async def extract_collection(
             if not isinstance(raw_item, dict):
                 continue
             item_dict = cast(dict[str, Any], raw_item)
-            item_raw, confidence = _split_confidence(dict(item_dict))
+            item_raw = _split_confidence(dict(item_dict))
             try:
                 instance = schema.model_validate(item_raw)
             except ValidationError:
@@ -349,7 +361,7 @@ async def extract_collection(
                 continue
             seen_uniques.add(unique)
             collected.append(instance)
-            confidences.append(confidence)
+            confidences.append(instance.confidence)
             new_this_iter += 1
 
         if not entities:
@@ -371,8 +383,8 @@ async def extract_semantic(
 ) -> tuple[str, float]:
     """Extract a semantic answer + confidence.
 
-    Confidence is pulled from a trailing ``<confidence>0.xx</confidence>`` tag;
-    when absent it defaults to 1.0 without failing.
+    Confidence is pulled from a trailing ``<extraction_confidence>0.xx</extraction_confidence>``
+    tag; when absent it falls back to ``schema.Schema.default_confidence``.
     """
     prompt = build_semantic_prompt(schema, text)
     response = (await llm.complete_text(prompt)).strip()
@@ -384,6 +396,6 @@ async def extract_semantic(
         confidence = max(0.0, min(1.0, float(match.group(1))))
         response = response[: match.start()].rstrip()
     else:
-        confidence = 1.0
+        confidence = get_schema_default_confidence(schema)
 
     return response, confidence

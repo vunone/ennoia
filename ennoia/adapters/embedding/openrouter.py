@@ -51,13 +51,13 @@ class OpenRouterEmbedding(EmbeddingAdapter):
         return module.AsyncOpenAI(**kwargs)
 
     async def embed(self, text: str) -> list[float]:
-        client = self._new_client()
-        response = await client.embeddings.create(model=self.model, input=text)
-        return [float(x) for x in response.data[0].embedding]
+        async with self._new_client() as client:
+            response = await client.embeddings.create(model=self.model, input=text)
+            return [float(x) for x in response.data[0].embedding]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        client = self._new_client()
-        response = await client.embeddings.create(model=self.model, input=texts)
-        return [[float(x) for x in datum.embedding] for datum in response.data]
+        async with self._new_client() as client:
+            response = await client.embeddings.create(model=self.model, input=texts)
+            return [[float(x) for x in datum.embedding] for datum in response.data]

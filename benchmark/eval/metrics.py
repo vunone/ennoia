@@ -1,23 +1,21 @@
-"""Retrieval recall@k computation.
+"""Retrieval precision@k and hit-rate helpers for the product benchmark.
 
-CUAD QA is single-document: every question has exactly one gold contract.
-Recall@k therefore reduces to "is the gold ``source_id`` in the top-k
-retrieved unique sources?".
-
-Both pipelines flatten their retrieval into an ordered, deduplicated list
-of ``source_id``s (langchain: chunks grouped by document; ennoia: union of
-every ``search`` tool call during the agent loop). This helper takes that
-list directly so the metric is unaffected by whichever retrieval flow
-produced it.
+Each query has exactly one gold product docid, so precision@k reduces to
+``1/k`` if the gold docid is among the first ``k`` retrieved unique
+docids, else ``0.0``. A companion ``hit_at_k`` returns the boolean for
+plotting / hit-rate summaries.
 """
 
 from __future__ import annotations
 
 
-def gold_contract_in_topk(
-    gold_contract_id: str,
-    retrieved_source_ids: list[str],
-    k: int,
-) -> bool:
-    """Return True if ``gold_contract_id`` is among the first ``k`` retrieved sources."""
-    return gold_contract_id in retrieved_source_ids[:k]
+def hit_at_k(gold_docid: str, retrieved: list[str], k: int) -> bool:
+    if k <= 0:
+        return False
+    return gold_docid in retrieved[:k]
+
+
+def precision_at_k(gold_docid: str, retrieved: list[str], k: int) -> float:
+    if k <= 0:
+        return 0.0
+    return 1.0 / k if hit_at_k(gold_docid, retrieved, k) else 0.0
