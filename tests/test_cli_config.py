@@ -8,6 +8,7 @@ that wires ``ennoia.ini`` into every subcommand.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -30,6 +31,19 @@ from ennoia.cli.config import (
     require_option,
     write_template,
 )
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences so substring asserts survive Rich styling.
+
+    Rich/Click split styled tokens like ``--schema`` into multiple escape
+    runs (``\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-schema\\x1b[0m``), which breaks
+    a literal ``"--schema" in output`` check on CI where colors are emitted.
+    """
+    return _ANSI_RE.sub("", text)
+
 
 _ALL_ENV_VARS: tuple[str, ...] = (
     *KEY_TO_ENVVAR.values(),
@@ -193,8 +207,9 @@ def test_try_command_body_error_when_schema_missing(
     (tmp_path / "doc.txt").write_text("body")
     result = CliRunner().invoke(cli_main.app, ["--no-config", "try", "doc.txt"])
     assert result.exit_code != 0
-    assert "--schema" in result.output
-    assert "ENNOIA_SCHEMA" in result.output
+    output = _strip_ansi(result.output)
+    assert "--schema" in output
+    assert "ENNOIA_SCHEMA" in output
 
 
 # ---------------------------------------------------------------------------
