@@ -31,7 +31,7 @@ class _SummaryB(BaseSemantic):
 
 class _LLM(LLMAdapter):
     async def complete_json(self, prompt: str) -> dict[str, Any]:
-        return {"cat": "legal", "_confidence": 0.9}
+        return {"cat": "legal", "extraction_confidence": 0.9}
 
     async def complete_text(self, prompt: str) -> str:
         # Distinct text per semantic so two embeds happen.

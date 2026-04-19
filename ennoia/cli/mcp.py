@@ -13,6 +13,7 @@ from pathlib import Path
 
 import typer
 
+from ennoia.cli.config import require_option
 from ennoia.cli.factories import parse_embedding_spec, parse_llm_spec, parse_store_spec
 from ennoia.index.pipeline import Pipeline
 from ennoia.server import ServerContext, no_auth, static_bearer_auth
@@ -25,9 +26,10 @@ _SUPPORTED_TRANSPORTS = {"sse", "stdio", "http"}
 
 
 def mcp_command(
-    store: str = typer.Option(
-        ...,
+    store: str | None = typer.Option(
+        None,
         "--store",
+        envvar="ENNOIA_STORE",
         help=(
             "Store URI. Plain path / 'file:<path>' → filesystem. "
             "'qdrant:<collection>' → Qdrant (needs --qdrant-url). "
@@ -37,6 +39,7 @@ def mcp_command(
     collection: str = typer.Option(
         "documents",
         "--collection",
+        envvar="ENNOIA_COLLECTION",
         help="Collection name for filesystem stores. Ignored for qdrant/pgvector.",
     ),
     qdrant_url: str | None = typer.Option(
@@ -48,12 +51,20 @@ def mcp_command(
     pg_dsn: str | None = typer.Option(
         None, "--pg-dsn", envvar="ENNOIA_PG_DSN", help="pgvector PostgreSQL DSN."
     ),
-    schema: Path = typer.Option(..., "--schema", help="Python module declaring schemas."),
-    transport: str = typer.Option("sse", "--transport", help="sse | stdio | http"),
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8090, "--port"),
-    llm: str = typer.Option("ollama:qwen3:0.6b", "--llm"),
-    embedding: str = typer.Option("sentence-transformers:all-MiniLM-L6-v2", "--embedding"),
+    schema: Path | None = typer.Option(
+        None, "--schema", envvar="ENNOIA_SCHEMA", help="Python module declaring schemas."
+    ),
+    transport: str = typer.Option(
+        "sse", "--transport", envvar="ENNOIA_TRANSPORT", help="sse | stdio | http"
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", envvar="ENNOIA_HOST"),
+    port: int = typer.Option(8090, "--port", envvar="ENNOIA_PORT"),
+    llm: str = typer.Option("ollama:qwen3:0.6b", "--llm", envvar="ENNOIA_LLM"),
+    embedding: str = typer.Option(
+        "sentence-transformers:all-MiniLM-L6-v2",
+        "--embedding",
+        envvar="ENNOIA_EMBEDDING",
+    ),
     api_key: str | None = typer.Option(
         None,
         "--api-key",
@@ -66,7 +77,7 @@ def mcp_command(
         help="Allow unauthenticated tool calls. Overrides --api-key. For local dev only.",
     ),
 ) -> None:
-    """Serve Ennoia's read-only MCP tools — ``discover_schema``, ``filter``, ``search``, ``retrieve``."""
+    """Serve Ennoia's read-only MCP tools — ``discover_schema``, ``search``, ``retrieve``."""
     from ennoia.cli.main import load_schemas
 
     if transport not in _SUPPORTED_TRANSPORTS:
@@ -78,6 +89,8 @@ def mcp_command(
         raise typer.BadParameter(
             "No auth configured. Set --api-key, export ENNOIA_API_KEY, or pass --no-auth."
         )
+    store = require_option(store, "--store", "store")
+    schema = require_option(schema, "--schema", "schema")
     auth = no_auth() if disable_auth else static_bearer_auth(api_key or "")
 
     classes = load_schemas(schema)

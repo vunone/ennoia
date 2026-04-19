@@ -3,12 +3,12 @@
 A worked example of the canonical Ennoia agent flow from
 `.ref/USAGE.md §5`:
 
-**discover → filter → search(filter_ids=…) → retrieve**
+**discover → search → retrieve**
 
-The agent starts by asking the server what's indexed, then narrows the
-candidate set with a structured filter, runs a semantic search *within*
-that set, and finally pulls the full structured record for whichever
-documents are worth citing. Each step is a separate MCP tool call, so an
+The agent starts by asking the server what's indexed, then issues one
+`search` call that combines a structured filter with a semantic query,
+and finally pulls the full structured record for whichever documents
+are worth citing. Each step is a separate MCP tool call, so an
 LLM-driven agent can plan the flow autonomously — no bespoke retrieval
 code required on the agent side.
 
@@ -57,37 +57,27 @@ async def main() -> None:
         discovery = await client.call_tool("discover_schema", {})
         print_discovery(discovery)
 
-        # 2. filter — narrow by structured fields only. Returns the
-        #    list of source_ids matching the filter. The filter keys
-        #    come straight from the discovery payload.
-        filtered_ids = await client.call_tool(
-            "filter",
-            {
-                "filters": {
-                    "jurisdiction": "WA",
-                    "date_decided__gte": "2020-01-01",
-                    "is_overruled": False,
-                }
-            },
-        )
-        print(f"filter() -> {len(filtered_ids)} candidates")
-
-        # 3. search — semantic ranking *within* the pre-filtered set.
-        #    `index="Holding"` pins the ranking to the single semantic
-        #    schema we care about; omit `index` to search all of them.
+        # 2. search — one call combining a structured filter and a
+        #    semantic query. The filter keys come straight from the
+        #    discovery payload. `index="Holding"` pins the ranking to a
+        #    single semantic schema; omit it to search all of them.
         hits = await client.call_tool(
             "search",
             {
                 "query": QUESTION,
-                "filter_ids": filtered_ids,
+                "filter": {
+                    "jurisdiction": "WA",
+                    "date_decided__gte": "2020-01-01",
+                    "is_overruled": False,
+                },
                 "index": "Holding",
-                "top_k": 3,
+                "limit": 3,
             },
         )
         for hit in hits:
             print(f"  {hit['source_id']:<20} score={hit['score']:.3f}")
 
-        # 4. retrieve — pull the full structured record for each hit
+        # 3. retrieve — pull the full structured record for each hit
         #    so the agent can cite jurisdiction, date, parties, etc.
         for hit in hits:
             record = await client.call_tool("retrieve", {"id": hit["source_id"]})
@@ -137,21 +127,21 @@ has to reason about which `extend()` branch fired for a given
 document — every possible field is known up front and namespaced
 consistently.
 
-## Why filter before search?
+## Two-phase retrieval, one tool call
 
-Running the structured filter first (`filter` → then `search(filter_ids=…)`)
-is the same two-phase plan the SDK `Pipeline.search(filters=…)` call uses
-internally. Splitting it across two tool calls gives the agent visibility
-into how many candidates the structured cut returned, which lets it
-reject a hopeless query early ("0 Washington rulings after 2020") instead
-of silently returning 0 vector hits. See
-[Concepts — Two-phase retrieval](../concepts.md#two-phase-retrieval) for
-the rationale.
+Passing `filter=` to `search` is not a hint — it's the whole plan. The
+server runs the structured filter first, then vector-ranks only the
+survivors (or pushes both phases into a single native query on hybrid
+backends like Qdrant / pgvector). This is the same two-phase plan the
+SDK's `Pipeline.search(filters=…)` uses internally; the MCP surface just
+exposes it as one tool so the agent can plan with a single decision.
+See [Concepts — Two-phase retrieval](../concepts.md#two-phase-retrieval)
+for the rationale.
 
 ## Error handling
 
-`filter` and `search` raise an MCP tool error whose message matches the
-[filter validation payload](../filters.md#validation-errors):
+`search` raises an MCP tool error on invalid filters, with a message
+matching the [filter validation payload](../filters.md#validation-errors):
 
 ```json
 {"error": "invalid_filter",

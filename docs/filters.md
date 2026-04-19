@@ -135,6 +135,24 @@ Unknown fields, unsupported operators, and un-coercible values raise
 }
 ```
 
+### Nested filter values are rejected
+
+The flat `{field__op: value}` form is canonical — the nested
+`{field: {op: value}}` form (Elasticsearch/MongoDB style) is not
+accepted, because silently swallowing it would collapse to a false
+equality and match zero rows. Mapping values trigger a
+`FilterValidationError` that tells the caller (or agent) how to rewrite
+the filter:
+
+```json
+{
+  "error": "invalid_filter",
+  "field": "date_decided",
+  "operator": "eq",
+  "message": "Filter value for 'date_decided' must be a scalar, not a mapping. Use the flat convention {'date_decided__<operator>': <value>}, e.g. {'date_decided__eq': <value>}."
+}
+```
+
 ## Interface consistency
 
 The same filter expressed across surfaces:

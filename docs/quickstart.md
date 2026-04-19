@@ -19,6 +19,20 @@ sentence-transformers — no keys, no containers.
 pip install "ennoia[ollama,sentence-transformers]"
 ```
 
+The full extras matrix (kept in sync with [README.md](../README.md#install)):
+
+| Extra | Adds |
+|---|---|
+| `openai`, `anthropic`, `openrouter` | Hosted LLM adapters |
+| `ollama` | Local LLM adapter |
+| `sentence-transformers` | Local embedding adapter |
+| `filesystem` | Parquet + NumPy persistent stores |
+| `qdrant` | Qdrant vector + hybrid store |
+| `pgvector` | PostgreSQL + pgvector hybrid store |
+| `cli` | `ennoia` command |
+| `server` | FastAPI REST + FastMCP |
+| `all` | Everything above |
+
 ## 3. Declare schemas + index
 
 ```python

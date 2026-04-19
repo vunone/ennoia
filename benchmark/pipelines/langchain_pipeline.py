@@ -1,102 +1,126 @@
-"""Textbook langchain shred-embed RAG baseline.
+"""Naive LangChain baseline: one embedding per product.
 
-``RecursiveCharacterTextSplitter`` -> local sentence-transformers embedder ->
-``InMemoryVectorStore`` (langchain-community) -> ``similarity_search``. No
-metadata filters, no reranking — the canonical naive-RAG comparator that
-every public RAG tutorial recommends.
+Concatenates ``title + text + bullets`` into a single ``Document`` per
+product, embeds once with OpenAI ``text-embedding-3-small`` (same model
+the Ennoia pipeline uses for its vector index), stores in
+``InMemoryVectorStore``, and serves queries via ``similarity_search`` +
+the shared generator prompt.
 
-The pipeline produces its answer by handing the retrieved chunks to the
-shared generator prompt from :mod:`benchmark.pipelines.generator`, so the
-only variable that changes vs. the ennoia pipeline is retrieval quality +
-agent reasoning, not the generator template.
+No chunking. No metadata filters. No reranking. The canonical naive-RAG
+comparator every public tutorial ships.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from langchain_community.vectorstores import InMemoryVectorStore  # type: ignore[import-untyped]
 from langchain_core.documents import Document  # type: ignore[import-untyped]
 from langchain_core.embeddings import Embeddings  # type: ignore[import-untyped]
-from langchain_text_splitters import RecursiveCharacterTextSplitter  # type: ignore[import-untyped]
 from tqdm import tqdm
 
-from benchmark.config import CHUNK_OVERLAP, CHUNK_SIZE, MODEL_EMBED, RETRIEVAL_TOP_K
-from benchmark.data.loader import Contract, Question
+from benchmark.config import MODEL_EMBED, RETRIEVAL_TOP_K
+from benchmark.data.prep import Product
 from benchmark.eval.cost import count_tokens
+from benchmark.pipelines._retry import async_with_retry
 from benchmark.pipelines.base import PipelineRun
 from benchmark.pipelines.generator import format_context, generate_answer, make_generator_llm
+from ennoia.adapters.embedding.openai import OpenAIEmbedding
 
 
 @dataclass(slots=True)
-class _RetrievedChunk:
+class _RetrievedDoc:
     source_id: str
     text: str
     score: float
 
 
-class _LocalSentenceTransformerEmbeddings(Embeddings):
-    """Minimal langchain ``Embeddings`` shim over ``sentence_transformers``.
+EMBED_BATCH_SIZE = 64
 
-    Saves us the extra dependency on ``langchain-huggingface`` — the
-    langchain baseline only needs ``embed_documents`` + ``embed_query`` to
-    drive ``InMemoryVectorStore``. Matching the model on both sides of the
-    comparison (ennoia uses ennoia's own ``SentenceTransformerEmbedding``)
-    keeps retrieval a fair apples-to-apples test.
+
+class _OpenAIEmbeddingsShim(Embeddings):
+    """Minimal LangChain ``Embeddings`` wrapper over Ennoia's OpenAI adapter.
+
+    Using Ennoia's adapter keeps the baseline honest: the same embedding
+    model runs against the same SDK on both sides of the comparison.
+    LangChain wants sync methods, so we bridge to the async adapter via
+    a fresh event loop per call.
+
+    ``embed_documents`` chunks the corpus into ``EMBED_BATCH_SIZE`` slices
+    and drives a tqdm bar over them — so the 1000-product corpus indexes
+    with visible progress, each batch retries rate-limit errors
+    independently, and we stay well below OpenAI's per-request token cap.
     """
 
     def __init__(self, model: str) -> None:
-        from sentence_transformers import SentenceTransformer
-
-        self._model: Any = SentenceTransformer(model)
+        self._adapter = OpenAIEmbedding(model=model)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        import asyncio
+
         if not texts:
             return []
-        matrix = self._model.encode(texts, convert_to_numpy=True, normalize_embeddings=False)
-        return [row.tolist() for row in matrix]
+        vectors: list[list[float]] = []
+        bar = tqdm(total=len(texts), desc="langchain embed", unit="product")
+        try:
+            for start in range(0, len(texts), EMBED_BATCH_SIZE):
+                chunk = texts[start : start + EMBED_BATCH_SIZE]
+                batch = asyncio.run(async_with_retry(lambda c=chunk: self._adapter.embed_batch(c)))
+                vectors.extend(batch)
+                bar.update(len(chunk))
+        finally:
+            bar.close()
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
-        vector = self._model.encode(text, convert_to_numpy=True, normalize_embeddings=False)
-        return vector.tolist()
+        import asyncio
+
+        return asyncio.run(async_with_retry(lambda: self._adapter.embed(text)))
+
+
+def _product_to_text(product: Product) -> str:
+    parts: list[str] = [product["title"]]
+    if product["brand"] and product["brand"] != "unknown":
+        parts.append(f"Brand: {product['brand']}")
+    if product["color"] and product["color"] != "unknown":
+        parts.append(f"Color: {product['color']}")
+    # Price lives in the text blob for the LangChain baseline too — the
+    # embedder sees it alongside title + description. Fair comparison
+    # against Ennoia, which uses the same blob for its extraction step.
+    parts.append(f"Price: ${product['price_usd']}")
+    if product["text"]:
+        parts.append(product["text"])
+    if product["bullet_points"]:
+        parts.append("\n".join(product["bullet_points"]))
+    return "\n\n".join(parts)
 
 
 class LangchainPipeline:
     name = "langchain"
 
     def __init__(self, embed_model: str = MODEL_EMBED) -> None:
-        self._splitter = RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-        )
-        self._embeddings = _LocalSentenceTransformerEmbeddings(embed_model)
+        self._embeddings: Embeddings = _OpenAIEmbeddingsShim(embed_model)
         self._store: InMemoryVectorStore | None = None
         self._generator = make_generator_llm()
 
-    async def index_corpus(self, contracts: list[Contract]) -> None:
+    async def index_corpus(self, products: list[Product]) -> None:
         documents: list[Document] = []
-        for contract in tqdm(contracts, desc="langchain chunk", unit="doc"):
-            chunks = self._splitter.split_text(contract["text"])
-            for idx, chunk in enumerate(chunks):
-                documents.append(
-                    Document(
-                        page_content=chunk,
-                        metadata={"source_id": contract["source_id"], "chunk": idx},
-                    )
+        for product in tqdm(products, desc="langchain docs", unit="product"):
+            documents.append(
+                Document(
+                    page_content=_product_to_text(product),
+                    metadata={"source_id": product["docid"]},
                 )
-        print(f"[langchain] embedding {len(documents)} chunks (one batched call)...")
+            )
         self._store = await InMemoryVectorStore.afrom_documents(documents, self._embeddings)
-        print(f"[langchain] indexed {len(documents)} chunks across {len(contracts)} contracts")
+        print(f"[langchain] indexed {len(documents)} products")
 
-    async def answer(self, question: Question) -> PipelineRun:
+    async def answer(self, query: str) -> PipelineRun:
         if self._store is None:
             raise RuntimeError("LangchainPipeline.index_corpus must be called before answer.")
-        results = await self._store.asimilarity_search_with_score(
-            question["question"], k=RETRIEVAL_TOP_K
-        )
-        chunks = [
-            _RetrievedChunk(
+        results = await self._store.asimilarity_search_with_score(query, k=RETRIEVAL_TOP_K)
+        docs = [
+            _RetrievedDoc(
                 source_id=str(doc.metadata.get("source_id", "")),
                 text=doc.page_content,
                 score=float(score),
@@ -104,17 +128,14 @@ class LangchainPipeline:
             for doc, score in results
         ]
         retrieved_ids: list[str] = []
-        for chunk in chunks:
-            if chunk.source_id and chunk.source_id not in retrieved_ids:
-                retrieved_ids.append(chunk.source_id)
+        for doc in docs:
+            if doc.source_id and doc.source_id not in retrieved_ids:
+                retrieved_ids.append(doc.source_id)
 
-        context_blocks = [(chunk.source_id, chunk.text, chunk.score) for chunk in chunks]
-        prompt = format_context(question["question"], context_blocks)
+        context_blocks = [(d.source_id, d.text, d.score) for d in docs]
+        prompt = format_context(query, context_blocks)
         answer_text = (await generate_answer(prompt, self._generator)) or "NOT_FOUND"
 
-        # tiktoken estimate since neither the Ollama nor the OpenAI
-        # ennoia adapter surfaces ``response.usage`` to callers. Keeps
-        # token accounting uniform across pipelines.
         prompt_tokens = count_tokens(prompt)
         completion_tokens = count_tokens(answer_text)
 

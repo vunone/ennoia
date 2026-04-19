@@ -58,8 +58,8 @@ class _ScriptedLLM(LLMAdapter):
 
 
 def test_augment_idempotent_on_required_when_already_present() -> None:
-    # If the incoming schema already lists ``_confidence`` as required, the
-    # helper must not duplicate the entry.
+    # If the incoming schema already lists ``extraction_confidence`` as
+    # required, the helper must not duplicate the entry.
     schema = {
         "properties": {"value": {"type": "integer"}},
         "required": ["value", CONFIDENCE_KEY],
@@ -76,8 +76,8 @@ def test_augment_idempotent_on_required_when_already_present() -> None:
 async def test_structural_retries_once_on_validation_error() -> None:
     llm = _ScriptedLLM(
         json_responses=[
-            {"value": "not-an-int", "_confidence": 0.5},  # fails Pydantic validation
-            {"value": 7, "_confidence": 0.9},  # retry succeeds
+            {"value": "not-an-int", "extraction_confidence": 0.5},  # fails Pydantic validation
+            {"value": 7, "extraction_confidence": 0.9},  # retry succeeds
         ]
     )
     instance, confidence = await extract_structural(
@@ -93,8 +93,8 @@ async def test_structural_retries_once_on_validation_error() -> None:
 async def test_structural_raises_when_retry_also_fails() -> None:
     llm = _ScriptedLLM(
         json_responses=[
-            {"value": "bad", "_confidence": 0.5},
-            {"value": "still-bad", "_confidence": 0.5},
+            {"value": "bad", "extraction_confidence": 0.5},
+            {"value": "still-bad", "extraction_confidence": 0.5},
         ]
     )
     with pytest.raises(ExtractionError, match="after retry"):
@@ -102,20 +102,23 @@ async def test_structural_raises_when_retry_also_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _split_confidence (via extract_structural) — non-numeric confidence
+# _split_confidence (via extract_structural) — invalid values fall back to
+# schema default (1.0 for a schema without an explicit override).
 # ---------------------------------------------------------------------------
 
 
-async def test_structural_non_numeric_confidence_defaults_to_one() -> None:
-    llm = _ScriptedLLM(json_responses=[{"value": 1, "_confidence": "high"}])
-    _, confidence = await extract_structural(
+async def test_structural_non_numeric_confidence_falls_back_to_default() -> None:
+    llm = _ScriptedLLM(json_responses=[{"value": 1, "extraction_confidence": "high"}])
+    instance, confidence = await extract_structural(
         schema=_Meta, text="body", context_additions=[], llm=llm
     )
+    # Invalid extra gets stripped; the property falls through to default.
     assert confidence == 1.0
+    assert instance.confidence == 1.0
 
 
-async def test_structural_clamps_confidence_to_unit_interval() -> None:
-    llm = _ScriptedLLM(json_responses=[{"value": 1, "_confidence": 5.0}])
+async def test_structural_out_of_range_confidence_falls_back_to_default() -> None:
+    llm = _ScriptedLLM(json_responses=[{"value": 1, "extraction_confidence": 5.0}])
     _, confidence = await extract_structural(
         schema=_Meta, text="body", context_additions=[], llm=llm
     )
@@ -128,13 +131,15 @@ async def test_structural_clamps_confidence_to_unit_interval() -> None:
 
 
 async def test_semantic_strips_trailing_confidence_tag() -> None:
-    llm = _ScriptedLLM(text_responses=["The answer is 42. <confidence>0.8</confidence>"])
+    llm = _ScriptedLLM(
+        text_responses=["The answer is 42. <extraction_confidence>0.8</extraction_confidence>"]
+    )
     answer, confidence = await extract_semantic(schema=_Summary, text="body", llm=llm)
     assert answer == "The answer is 42."
     assert confidence == 0.8
 
 
-async def test_semantic_defaults_to_one_when_tag_missing() -> None:
+async def test_semantic_defaults_to_schema_default_when_tag_missing() -> None:
     llm = _ScriptedLLM(text_responses=["No confidence tag here."])
     answer, confidence = await extract_semantic(schema=_Summary, text="body", llm=llm)
     assert answer == "No confidence tag here."
@@ -142,12 +147,12 @@ async def test_semantic_defaults_to_one_when_tag_missing() -> None:
 
 
 async def test_semantic_clamps_confidence_to_unit_interval() -> None:
-    llm = _ScriptedLLM(text_responses=["answer <confidence>5.5</confidence>"])
+    llm = _ScriptedLLM(text_responses=["answer <extraction_confidence>5.5</extraction_confidence>"])
     _, confidence = await extract_semantic(schema=_Summary, text="body", llm=llm)
     assert confidence == 1.0
 
 
 async def test_semantic_parses_confidence_without_decimal_point() -> None:
-    llm = _ScriptedLLM(text_responses=["answer <confidence>1</confidence>"])
+    llm = _ScriptedLLM(text_responses=["answer <extraction_confidence>1</extraction_confidence>"])
     _, confidence = await extract_semantic(schema=_Summary, text="body", llm=llm)
     assert confidence == 1.0

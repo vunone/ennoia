@@ -47,6 +47,13 @@ class _FakeChat:
 class _FakeClient:
     def __init__(self, payload: str) -> None:
         self.chat = _FakeChat(_FakeCompletions(payload))
+        self.closed = False
+
+    async def __aenter__(self) -> _FakeClient:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        self.closed = True
 
 
 async def test_complete_json_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:

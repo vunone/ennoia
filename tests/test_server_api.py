@@ -28,7 +28,7 @@ def _pipeline(store: MockStore | None = None) -> Pipeline:
         schemas=[_Doc, _Summary],
         store=(store or MockStore()),
         llm=MockLLMAdapter(
-            json_responses=lambda _: {"cat": "legal", "_confidence": 0.9},
+            json_responses=lambda _: {"cat": "legal", "extraction_confidence": 0.9},
             text_responses=lambda _: "a summary",
         ),
         embedding=MockEmbeddingAdapter(dim=4),

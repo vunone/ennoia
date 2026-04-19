@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ennoia"
-version = "0.3.1"
+version = "0.4.0"
 description = "Declarative Document Indexing (DDI) Schemas for RAG — LLM-powered pre-indexing and hybrid retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -88,6 +88,10 @@ Changelog = "https://github.com/vunone/ennoia/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ennoia"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"ennoia/prompts/craft.md" = "ennoia/prompts/craft.md"
+"ennoia/prompts/benchmark_queries.md" = "ennoia/prompts/benchmark_queries.md"
 
 [tool.ruff]
 line-length = 100

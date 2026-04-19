@@ -51,14 +51,14 @@ class AnthropicAdapter(LLMAdapter):
         return module.AsyncAnthropic(**kwargs)
 
     async def complete_json(self, prompt: str) -> dict[str, Any]:
-        client = self._new_client()
-        response = await client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-            tools=[_EMIT_TOOL],
-            tool_choice={"type": "tool", "name": _EMIT_TOOL["name"]},
-        )
+        async with self._new_client() as client:
+            response = await client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                tools=[_EMIT_TOOL],
+                tool_choice={"type": "tool", "name": _EMIT_TOOL["name"]},
+            )
         for block in response.content:
             if getattr(block, "type", None) == "tool_use":
                 input_value = getattr(block, "input", None)
@@ -69,12 +69,12 @@ class AnthropicAdapter(LLMAdapter):
         )
 
     async def complete_text(self, prompt: str) -> str:
-        client = self._new_client()
-        response = await client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        async with self._new_client() as client:
+            response = await client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
         parts: list[str] = []
         for block in response.content:
             if getattr(block, "type", None) == "text":

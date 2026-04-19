@@ -18,12 +18,20 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from rich.console import Console
 
+from ennoia.cli.config import INI_FILENAME, load_ini, require_option, write_template
 from ennoia.cli.factories import parse_embedding_spec, parse_llm_spec, parse_store_spec
+from ennoia.craft import CraftError, run_craft_loop
 from ennoia.index.exceptions import FilterValidationError
-from ennoia.index.extractor import extract_semantic, extract_structural
+from ennoia.index.extractor import (
+    CONFIDENCE_KEY,
+    extract_collection,
+    extract_semantic,
+    extract_structural,
+)
 from ennoia.index.pipeline import Pipeline
-from ennoia.schema.base import BaseSemantic, BaseStructure
+from ennoia.schema.base import BaseCollection, BaseSemantic, BaseStructure
 from ennoia.utils.filters import parse_bool, split_filter_key
 
 __all__ = ["app"]
@@ -34,6 +42,24 @@ app = typer.Typer(
     help="Ennoia — LLM-powered document pre-indexing and hybrid retrieval.",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def root_callback(
+    config: Path = typer.Option(
+        Path(INI_FILENAME),
+        "--config",
+        help=(f"Path to the INI config (default: ./{INI_FILENAME}). Missing file is not an error."),
+    ),
+    no_config: bool = typer.Option(
+        False,
+        "--no-config",
+        help="Skip loading the INI config even if it exists.",
+    ),
+) -> None:
+    """Ennoia — LLM-powered document pre-indexing and hybrid retrieval."""
+    if not no_config:
+        load_ini(config)
 
 
 def _register_server_commands() -> None:
@@ -53,8 +79,15 @@ def _register_server_commands() -> None:
 _register_server_commands()
 
 
-def load_schemas(path: Path) -> list[type[BaseStructure] | type[BaseSemantic]]:
-    """Load schema classes from a Python module file."""
+def load_schemas(
+    path: Path,
+) -> list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]]:
+    """Load schema classes from a Python module file.
+
+    Recognises subclasses of :class:`BaseStructure`, :class:`BaseSemantic`,
+    and :class:`BaseCollection` — the three extractor kinds — defined at
+    module level in the target file.
+    """
     if not path.exists():
         raise typer.BadParameter(f"Schema file not found: {path}")
 
@@ -65,17 +98,21 @@ def load_schemas(path: Path) -> list[type[BaseStructure] | type[BaseSemantic]]:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
-    classes: list[type[BaseStructure] | type[BaseSemantic]] = []
+    classes: list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]] = []
     for _, obj in inspect.getmembers(module, inspect.isclass):
         if obj.__module__ != module.__name__:
             continue
-        if (issubclass(obj, BaseStructure) and obj is not BaseStructure) or (
-            issubclass(obj, BaseSemantic) and obj is not BaseSemantic
+        if (
+            (issubclass(obj, BaseStructure) and obj is not BaseStructure)
+            or (issubclass(obj, BaseSemantic) and obj is not BaseSemantic)
+            or (issubclass(obj, BaseCollection) and obj is not BaseCollection)
         ):
             classes.append(obj)
 
     if not classes:
-        raise typer.BadParameter(f"No BaseStructure/BaseSemantic subclasses found in {path}.")
+        raise typer.BadParameter(
+            f"No BaseStructure/BaseSemantic/BaseCollection subclasses found in {path}."
+        )
     return classes
 
 
@@ -107,11 +144,42 @@ def _read_document(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _render_field(console: Console, key: str, value: Any, indent: str = "  ") -> None:
+    """Render a single ``key: value`` row with cyan key, default value."""
+    rendered_value = "" if value is None else repr(value)
+    console.print(f"{indent}[cyan]{key}[/cyan]: {rendered_value}", highlight=False)
+
+
+def _render_header(
+    console: Console,
+    kind: str,
+    schema_name: str,
+    confidence: float | None = None,
+) -> None:
+    """Render ``Extractor[Kind]: Name  (confidence: 0.90)`` header line."""
+    suffix = f"  [yellow](confidence: {confidence:.2f})[/yellow]" if confidence is not None else ""
+    console.print(
+        f"[bold]Extractor[[magenta]{kind}[/magenta]]:[/bold] [bold cyan]{schema_name}[/bold cyan]"
+        + suffix,
+        highlight=False,
+    )
+
+
 @app.command("try")
 def try_command(
     document: Path = typer.Argument(..., help="Path to a document file."),
-    schema: Path = typer.Option(..., "--schema", help="Python module declaring schemas."),
-    llm: str = typer.Option("ollama:qwen3:0.6b", "--llm", help="LLM adapter URI."),
+    schema: Path | None = typer.Option(
+        None,
+        "--schema",
+        envvar="ENNOIA_SCHEMA",
+        help="Python module declaring schemas.",
+    ),
+    llm: str = typer.Option(
+        "ollama:qwen3:0.6b",
+        "--llm",
+        envvar="ENNOIA_LLM",
+        help="LLM adapter URI.",
+    ),
 ) -> None:
     """Run a single extraction pass and print fields + confidences.
 
@@ -119,29 +187,53 @@ def try_command(
     Use ``ennoia index`` / ``ennoia search`` when you want persistence and
     semantic search.
     """
+    schema = require_option(schema, "--schema", "schema")
     classes = load_schemas(schema)
     text = _read_document(document)
     llm_adapter = parse_llm_spec(llm)
+    console = Console()
 
     async def run() -> None:
-        for cls in classes:
+        for index, cls in enumerate(classes):
+            if index > 0:
+                console.print()
             if issubclass(cls, BaseStructure):
-                instance, confidence = await extract_structural(
+                instance, _ = await extract_structural(
                     schema=cls, text=text, context_additions=[], llm=llm_adapter
                 )
+                _render_header(console, "BaseStructure", cls.__name__, instance.confidence)
                 dumped = {
-                    k: v for k, v in instance.model_dump(mode="json").items() if k != "_confidence"
+                    k: v for k, v in instance.model_dump(mode="json").items() if k != CONFIDENCE_KEY
                 }
-                typer.echo(f"Schema: {cls.__name__}")
                 for key, value in dumped.items():
-                    typer.echo(f"  {key}: {value!r}  (confidence: {confidence:.2f})")
+                    _render_field(console, key, value)
                 extended = instance.extend()
                 if extended:
-                    typer.echo("  -> extend(): " + ", ".join(c.__name__ for c in extended))
+                    names = ", ".join(c.__name__ for c in extended)
+                    console.print(f"  [dim]→ extend():[/dim] {names}", highlight=False)
+            elif issubclass(cls, BaseCollection):
+                entities, _ = await extract_collection(
+                    schema=cls, text=text, context_additions=[], llm=llm_adapter
+                )
+                _render_header(console, "BaseCollection", cls.__name__)
+                if not entities:
+                    console.print("  [dim](no entities extracted)[/dim]", highlight=False)
+                for entity in entities:
+                    console.print(
+                        f"  [dim]-[/dim] [yellow](confidence: {entity.confidence:.2f})[/yellow]",
+                        highlight=False,
+                    )
+                    dumped = {
+                        k: v
+                        for k, v in entity.model_dump(mode="json").items()
+                        if k != CONFIDENCE_KEY
+                    }
+                    for key, value in dumped.items():
+                        _render_field(console, key, value, indent="      ")
             else:
                 answer, confidence = await extract_semantic(schema=cls, text=text, llm=llm_adapter)
-                typer.echo(f"Schema: {cls.__name__}")
-                typer.echo(f"  {answer!r}  (confidence: {confidence:.2f})")
+                _render_header(console, "BaseSemantic", cls.__name__, confidence)
+                console.print(f"  {answer!r}", highlight=False)
 
     asyncio.run(run())
 
@@ -149,10 +241,11 @@ def try_command(
 @app.command("index")
 def index_command(
     directory: Path = typer.Argument(..., help="Directory whose files should be indexed."),
-    schema: Path = typer.Option(..., "--schema"),
-    store: str = typer.Option(
-        ...,
+    schema: Path | None = typer.Option(None, "--schema", envvar="ENNOIA_SCHEMA"),
+    store: str | None = typer.Option(
+        None,
         "--store",
+        envvar="ENNOIA_STORE",
         help=(
             "Store URI. Plain path / 'file:<path>' → filesystem. "
             "'qdrant:<collection>' → Qdrant (needs --qdrant-url). "
@@ -162,6 +255,7 @@ def index_command(
     collection: str = typer.Option(
         "documents",
         "--collection",
+        envvar="ENNOIA_COLLECTION",
         help=(
             "Collection name for filesystem stores. "
             "Ignored for qdrant/pgvector (collection is in --store)."
@@ -176,8 +270,12 @@ def index_command(
     pg_dsn: str | None = typer.Option(
         None, "--pg-dsn", envvar="ENNOIA_PG_DSN", help="pgvector PostgreSQL DSN."
     ),
-    llm: str = typer.Option("ollama:qwen3:0.6b", "--llm"),
-    embedding: str = typer.Option("sentence-transformers:all-MiniLM-L6-v2", "--embedding"),
+    llm: str = typer.Option("ollama:qwen3:0.6b", "--llm", envvar="ENNOIA_LLM"),
+    embedding: str = typer.Option(
+        "sentence-transformers:all-MiniLM-L6-v2",
+        "--embedding",
+        envvar="ENNOIA_EMBEDDING",
+    ),
     no_threads: bool = typer.Option(
         False,
         "--no-threads",
@@ -188,6 +286,8 @@ def index_command(
     ),
 ) -> None:
     """Index every file in ``directory`` against the declared schemas."""
+    schema = require_option(schema, "--schema", "schema")
+    store = require_option(store, "--store", "store")
     if not directory.is_dir():
         raise typer.BadParameter(f"Not a directory: {directory}")
 
@@ -221,9 +321,10 @@ def index_command(
 @app.command("search")
 def search_command(
     query: str = typer.Argument(..., help="Natural-language query."),
-    store: str = typer.Option(
-        ...,
+    store: str | None = typer.Option(
+        None,
         "--store",
+        envvar="ENNOIA_STORE",
         help=(
             "Store URI. Plain path / 'file:<path>' → filesystem. "
             "'qdrant:<collection>' → Qdrant (needs --qdrant-url). "
@@ -233,6 +334,7 @@ def search_command(
     collection: str = typer.Option(
         "documents",
         "--collection",
+        envvar="ENNOIA_COLLECTION",
         help="Collection name for filesystem stores. Ignored for qdrant/pgvector.",
     ),
     qdrant_url: str | None = typer.Option(
@@ -247,6 +349,7 @@ def search_command(
     schema: Path | None = typer.Option(
         None,
         "--schema",
+        envvar="ENNOIA_SCHEMA",
         help=(
             "Schemas used for filter validation. Optional — when omitted, filters are "
             "forwarded without validation (the structured store may still reject them)."
@@ -258,8 +361,12 @@ def search_command(
         help="Filter in 'key=value' or 'key__op=value' form. Repeatable.",
     ),
     top_k: int = typer.Option(5, "--top-k"),
-    llm: str = typer.Option("ollama:qwen3:0.6b", "--llm"),
-    embedding: str = typer.Option("sentence-transformers:all-MiniLM-L6-v2", "--embedding"),
+    llm: str = typer.Option("ollama:qwen3:0.6b", "--llm", envvar="ENNOIA_LLM"),
+    embedding: str = typer.Option(
+        "sentence-transformers:all-MiniLM-L6-v2",
+        "--embedding",
+        envvar="ENNOIA_EMBEDDING",
+    ),
     no_threads: bool = typer.Option(
         False,
         "--no-threads",
@@ -270,6 +377,7 @@ def search_command(
     ),
 ) -> None:
     """Search the filesystem store with optional structured filters."""
+    store = require_option(store, "--store", "store")
     filters = _parse_filters(filters_raw)
 
     classes = load_schemas(schema) if schema is not None else []
@@ -311,6 +419,101 @@ def search_command(
             typer.echo(f"   {json.dumps(hit.structural, default=str)}")
         if semantic_preview:
             typer.echo(semantic_preview)
+
+
+@app.command("craft")
+def craft_command(
+    document: Path = typer.Argument(..., help="Sample document the schema should fit."),
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        help=(
+            "Path to the schema .py file to write. "
+            "If it already exists, the current contents are passed to the LLM "
+            "and improved instead of rewritten from scratch."
+        ),
+    ),
+    llm: str | None = typer.Option(
+        None,
+        "--llm",
+        envvar="ENNOIA_LLM",
+        help="LLM adapter URI, e.g. openai:gpt-4o-mini.",
+    ),
+    task: str = typer.Option(
+        ...,
+        "--task",
+        help="Natural-language description of the retrieval task the schema must serve.",
+    ),
+    max_retries: int = typer.Option(
+        2,
+        "--max-retries",
+        min=0,
+        help="Budget for validation retries after the first attempt (default: 2).",
+    ),
+) -> None:
+    """Draft (or improve) a schema file with an LLM from a sample document.
+
+    Prototype-only. The generated schema imports cleanly, but field
+    selection, docstrings, types, and ``extend()`` logic all need human
+    review before the schema is handed to ``ennoia index``.
+    """
+    typer.echo(
+        "[craft] WARNING: Prototype only. The generated schema is a starting point — "
+        "review field choices, docstrings, types, and extend() logic before "
+        "using it with `ennoia index` on real data."
+    )
+    llm = require_option(llm, "--llm", "llm")
+    text = _read_document(document)
+    llm_adapter = parse_llm_spec(llm)
+    existing_schema = (
+        output.read_text(encoding="utf-8") if output.exists() and output.is_file() else None
+    )
+
+    def _announce(attempt: int, stage: str) -> None:
+        typer.echo(f"[craft] attempt {attempt + 1}/{max_retries + 1}: {stage}")
+
+    try:
+        asyncio.run(
+            run_craft_loop(
+                llm=llm_adapter,
+                task=task,
+                document=text,
+                output_path=output,
+                existing_schema=existing_schema,
+                max_retries=max_retries,
+                on_attempt=_announce,
+            )
+        )
+    except CraftError as err:
+        typer.echo(f"[craft] failed: {err}")
+        if output.exists():
+            typer.echo(f"[craft] partial output left at {output} for inspection.")
+        raise typer.Exit(code=1) from err
+
+    typer.echo(f"[craft] wrote draft schema to {output}")
+    typer.echo(
+        "[craft] WARNING: Review the draft before indexing: confirm the extractor "
+        "kinds, docstrings (they are the LLM prompts), field types / Literals, "
+        "and any extend() branches match your retrieval task."
+    )
+
+
+@app.command("init")
+def init_command(
+    path: Path = typer.Option(
+        Path(INI_FILENAME),
+        "--path",
+        help=f"Destination for the template (default: ./{INI_FILENAME}).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite the destination if it already exists.",
+    ),
+) -> None:
+    """Write a template ``ennoia.ini`` for the current project."""
+    written = write_template(path, force=force)
+    typer.echo(f"Wrote {written}. Edit it and re-run any ennoia command without flags.")
 
 
 def main() -> None:  # pragma: no cover — thin console-script wrapper.

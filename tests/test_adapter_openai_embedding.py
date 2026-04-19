@@ -41,6 +41,13 @@ class _Embeddings:
 class _Client:
     def __init__(self, vector: list[float]) -> None:
         self.embeddings = _Embeddings(vector)
+        self.closed = False
+
+    async def __aenter__(self) -> _Client:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        self.closed = True
 
 
 async def test_embed_document_and_query_share_path(monkeypatch: pytest.MonkeyPatch) -> None:

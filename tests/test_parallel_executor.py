@@ -43,7 +43,7 @@ class TimingLLM(LLMAdapter):
         await asyncio.sleep(0.02)
         async with self.lock:
             self.in_flight -= 1
-        return {"value": "x", "_confidence": 0.9}
+        return {"value": "x", "extraction_confidence": 0.9}
 
     async def complete_text(self, prompt: str) -> str:
         return "topic"

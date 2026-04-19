@@ -214,7 +214,7 @@ class MyHybridStore(HybridStore):
         ...
 
     async def filter(self, filters: dict[str, Any]) -> list[str]:
-        # Powers the two-phase MCP flow (``filter → search(filter_ids=...)``).
+        # Powers ``Pipeline.afilter`` and the REST ``POST /filter`` endpoint.
         # If your backend doesn't push down every operator natively,
         # post-filter the candidate rows through ``apply_filters``.
         ...

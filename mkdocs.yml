@@ -102,4 +102,4 @@ nav:
   - Cookbook:
     - MCP agent loop: cookbook/mcp-agent.md
     - Custom adapters and stores: cookbook/custom-adapter.md
-    - CUAD precision benchmark: cookbook/cuad-benchmark.md
+    - Product-discovery benchmark: cookbook/product-discovery-benchmark.md

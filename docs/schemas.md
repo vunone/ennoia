@@ -154,7 +154,8 @@ continues to work for existing consumers.
 `BaseStructure.extend()` runs after the instance is extracted and returns
 further schemas (structural or semantic) to apply to the same document.
 The populated parent instance is available through `self` — including its
-self-reported `_confidence` — so conditional logic is just Python.
+self-reported confidence via `self.confidence` — so conditional logic is
+just Python.
 
 ```python
 class CaseDocument(BaseStructure):
@@ -163,7 +164,7 @@ class CaseDocument(BaseStructure):
     jurisdiction: Literal["WA", "NY", "TX"]
 
     def extend(self):
-        if self.jurisdiction == "WA" and getattr(self, "_confidence", 0.0) >= 0.8:
+        if self.jurisdiction == "WA" and self.confidence >= 0.8:
             return [WashingtonAppellateSchema]
         return []
 ```
@@ -301,20 +302,43 @@ omits the field from both the discovery payload and the filter validator
 
 ## Confidence
 
-The extractor dynamically appends a `_confidence` property to the JSON
-Schema the LLM sees — it is **not** a declared field on `BaseStructure`.
-This guarantees the model emits a self-reported score *after* filling in
-the real fields (evaluation, not guessing). The confidence is surfaced in
-two places:
+The extractor dynamically appends an `extraction_confidence` property to
+the JSON Schema the LLM sees — it is **not** a declared field on
+`BaseStructure`. This guarantees the model emits a self-reported score
+*after* filling in the real fields (evaluation, not guessing). The
+confidence is surfaced in two places:
 
 - `IndexResult.confidences`: `{schema_name: float}` — the summary exposed
   to pipeline callers.
-- `instance._confidence`: set on the validated model via
-  `ConfigDict(extra="allow")` so `extend()` can branch on it.
+- `instance.confidence` — a `@property` on `BaseStructure` and
+  `BaseCollection` that reads the injected value when present and falls
+  back to `Schema.default_confidence` (itself defaulting to `1.0`)
+  otherwise. `extend()` reads this property to branch on confidence.
+
+Do **not** declare `extraction_confidence` or `confidence` as a field on
+your schema; doing either would shadow the framework's injection.
+Semantic extractors use a parallel mechanism — a trailing
+`<extraction_confidence>0.xx</extraction_confidence>` tag on the LLM's
+answer — and fall back to `Schema.default_confidence` when absent.
 
 The confidence is **stripped from the structured-store payload** — it is
-observability, not data. If the model omits `_confidence`, it defaults to
-1.0 with a warning.
+observability, not data.
+
+### Custom default
+
+Override the fallback per-schema when omission carries real meaning in
+your domain (e.g. low-confidence extractions should be penalised instead
+of rewarded with an implicit `1.0`):
+
+```python
+class CaseDocument(BaseStructure):
+    """Extract case metadata."""
+
+    jurisdiction: Literal["WA", "NY", "TX"]
+
+    class Schema:
+        default_confidence = 0.5
+```
 
 ## RejectException
 

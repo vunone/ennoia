@@ -42,19 +42,19 @@ class OpenAIAdapter(LLMAdapter):
         return module.AsyncOpenAI(**kwargs)
 
     async def complete_json(self, prompt: str) -> dict[str, Any]:
-        client = self._new_client()
-        response = await client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content or ""
-        return parse_json_object(content, "OpenAI")
+        async with self._new_client() as client:
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or ""
+            return parse_json_object(content, "OpenAI")
 
     async def complete_text(self, prompt: str) -> str:
-        client = self._new_client()
-        response = await client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return str(response.choices[0].message.content or "")
+        async with self._new_client() as client:
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return str(response.choices[0].message.content or "")

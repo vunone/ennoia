@@ -1,10 +1,13 @@
 """Token / cost accounting and pre-flight estimation.
 
-The OpenAI adapters in ennoia don't surface ``response.usage`` to callers,
-so the live counter here uses ``tiktoken`` to estimate after each call by
-hashing the prompt + answer rather than reading the API response. That's
-inexact (within ~5% for cl100k-family encoders) but good enough to enforce
-a hard ``--max-cost-usd`` cap without changing core ennoia interfaces.
+The ennoia adapters don't surface ``response.usage`` to callers, so the
+live counter here uses ``tiktoken`` to estimate after each call by
+encoding the prompt + answer rather than reading the API response. That's
+inexact (within ~5% for cl100k-family encoders) but good enough to
+enforce a hard ``--max-cost-usd`` cap without changing core ennoia
+interfaces. For the product benchmark only embedding is paid; the LLM
+model is free-tier OpenRouter so its tokens are still counted (for audit)
+but zero-priced.
 """
 
 from __future__ import annotations
@@ -13,15 +16,12 @@ import threading
 
 import tiktoken
 
-from benchmark.config import MODEL_EMBED, MODEL_GEN, MODEL_JUDGE, PRICING
+from benchmark.config import MODEL_EMBED, MODEL_LLM, PRICING
 
 
 def _encoder() -> tiktoken.Encoding:
-    # gpt-5.4 family is post-cl100k but tiktoken may not ship a dedicated
-    # encoder yet; cl100k_base estimates within a few percent and never
-    # double-counts.
     try:
-        return tiktoken.encoding_for_model("gpt-4o")
+        return tiktoken.encoding_for_model("o200k_base")
     except KeyError:
         return tiktoken.get_encoding("cl100k_base")
 
@@ -77,44 +77,35 @@ class RunningCost:
 
 
 def estimate_run_cost(
-    n_contracts: int,
-    n_questions: int,
-    avg_contract_tokens: int = 25_000,
-    avg_question_context_tokens: int = 3_000,
-    avg_answer_tokens: int = 200,
-    avg_judge_input_tokens: int = 1_000,
-    avg_judge_output_tokens: int = 80,
-    schemas_per_contract: int = 3,
-    chunks_per_contract: int = 30,
+    n_products: int,
+    n_queries: int,
+    avg_product_tokens: int = 600,
+    avg_question_context_tokens: int = 800,
+    avg_answer_tokens: int = 80,
+    avg_judge_input_tokens: int = 800,
+    avg_judge_output_tokens: int = 60,
+    schemas_per_product: int = 3,
     agent_turn_multiplier: float = 3.0,
 ) -> dict[str, float]:
     """Pre-flight estimate with conservative assumptions.
 
-    Returns per-bucket USD plus a total. Use to decide whether to require
-    ``--confirm-cost`` before letting a long run start.
-
-    ``agent_turn_multiplier`` scales the ennoia-side QA bucket to account
-    for the tool-calling loop: each question goes through ~3 assistant
-    turns on average (discover -> search -> final) with schema + hit
-    payloads echoed back each time.
+    The free OpenRouter LLM tokens round to $0 so the total is dominated
+    by embedding tokens. The cost cap still exists to catch mis-typed
+    model names that route to a paid OpenAI model.
     """
-    extraction_input = n_contracts * avg_contract_tokens * schemas_per_contract
-    extraction_output = n_contracts * 500 * schemas_per_contract  # JSON outputs are short.
-    embedding_tokens_ennoia = n_contracts * 600  # one summary per contract
-    embedding_tokens_lc = n_contracts * chunks_per_contract * 300
-    lc_qa_input = n_questions * avg_question_context_tokens
-    lc_qa_output = n_questions * avg_answer_tokens
-    ennoia_qa_input = int(n_questions * avg_question_context_tokens * agent_turn_multiplier)
-    ennoia_qa_output = int(n_questions * avg_answer_tokens * agent_turn_multiplier)
-    judge_input = n_questions * avg_judge_input_tokens
-    judge_output = n_questions * avg_judge_output_tokens
+    extraction_input = n_products * avg_product_tokens * schemas_per_product
+    extraction_output = n_products * 300 * schemas_per_product
+    embedding_tokens = n_products * 600  # summary + features rows
+    lc_embed_tokens = n_products * avg_product_tokens
+    qa_input = int(n_queries * avg_question_context_tokens * agent_turn_multiplier)
+    qa_output = int(n_queries * avg_answer_tokens * agent_turn_multiplier)
+    judge_input = n_queries * avg_judge_input_tokens
+    judge_output = n_queries * avg_judge_output_tokens
 
-    # Generator + embedder are typically local (zero-priced) so these two
-    # buckets round to $0; the cost cap exists to protect the judge spend.
-    extraction_usd = cost_for(MODEL_GEN, extraction_input, extraction_output)
-    embedding_usd = cost_for(MODEL_EMBED, embedding_tokens_ennoia + embedding_tokens_lc, 0)
-    qa_usd = cost_for(MODEL_GEN, lc_qa_input + ennoia_qa_input, lc_qa_output + ennoia_qa_output)
-    judge_usd = cost_for(MODEL_JUDGE, judge_input, judge_output)
+    extraction_usd = cost_for(MODEL_LLM, extraction_input, extraction_output)
+    embedding_usd = cost_for(MODEL_EMBED, embedding_tokens + lc_embed_tokens, 0)
+    qa_usd = cost_for(MODEL_LLM, qa_input, qa_output)
+    judge_usd = cost_for(MODEL_LLM, judge_input, judge_output)
     total = extraction_usd + embedding_usd + qa_usd + judge_usd
 
     return {

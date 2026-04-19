@@ -1,46 +1,42 @@
 """Shared answer-generation step used by the langchain baseline.
 
-The ennoia pipeline generates its own answer inside the agent loop
-(:mod:`benchmark.pipelines.ennoia_pipeline`); langchain has no agent and
-instead hands retrieved chunks to this same prompt. The prompt forces
-``NOT_FOUND`` when the context lacks the answer — measured by the judge as
-a non-hallucinated abstention.
+The ennoia pipeline generates its own answer inside its agent loop; the
+langchain baseline has no agent, so it hands retrieved product cards to
+this prompt and lets the LLM pick a docid. The prompt mirrors the
+ennoia-side response contract (JSON ``{"docid","reason"}`` or
+``NOT_FOUND``) so the judge grades both pipelines the same way.
 """
 
 from __future__ import annotations
 
-from benchmark.config import GEN_TIMEOUT_SEC, MODEL_GEN, OLLAMA_HOST
+from benchmark.config import GEN_TIMEOUT_SEC, MODEL_LLM
 from ennoia.adapters.llm.base import LLMAdapter
-from ennoia.adapters.llm.ollama import OllamaAdapter
+from ennoia.adapters.llm.openrouter import OpenRouterAdapter
 
-_PROMPT_TEMPLATE = """You are a legal contract analyst. Answer the question below using ONLY the provided contract excerpts. If the excerpts do not contain enough information to answer, reply exactly: NOT_FOUND
+_PROMPT_TEMPLATE = """You are a shopping assistant. The user issued the query below. Pick the single best product from the retrieved candidates.
 
-# Question
+# Query
 {question}
 
-# Contract excerpts
+# Retrieved candidates (docid + listing excerpt, in rank order)
 {context}
 
-# Instructions
-- Quote or paraphrase only what appears in the excerpts.
-- Do not draw on outside legal knowledge.
-- If multiple excerpts are relevant, synthesise them.
-- If the answer is not present, reply exactly: NOT_FOUND
+# Rules
+- Recommend exactly ONE product.
+- Reply with ONLY a JSON object: {{"docid": "<docid>", "reason": "<one sentence>"}}.
+- If no candidate plausibly matches the query, reply exactly: NOT_FOUND
+- Do not mention price — it is not in the data.
 
 # Answer
 """
 
 
 def format_context(question: str, blocks: list[tuple[str, str, float]]) -> str:
-    """Render ``question`` + excerpt blocks into the shared prompt template.
-
-    ``blocks`` is a list of ``(source_id, text, score)`` tuples in rank order.
-    """
     if not blocks:
-        body = "(no excerpts retrieved)"
+        body = "(no candidates retrieved)"
     else:
         lines = [
-            f"[{idx}] (source={source_id}, score={score:.3f})\n{text}"
+            f"[{idx}] docid={source_id} score={score:.3f}\n{text}"
             for idx, (source_id, text, score) in enumerate(blocks, 1)
         ]
         body = "\n\n".join(lines)
@@ -51,12 +47,6 @@ async def generate_answer(prompt: str, llm: LLMAdapter) -> str:
     return (await llm.complete_text(prompt)).strip()
 
 
-def make_generator_llm(model: str = MODEL_GEN) -> LLMAdapter:
-    """Return the LLM backing the langchain baseline's answer step.
-
-    Defaults to a local Ollama adapter; swap ``BENCHMARK_MODEL_GEN`` +
-    ``OLLAMA_HOST`` at runtime to point at a different local (or
-    OpenAI-compatible) backend. The return type is ``LLMAdapter`` so the
-    caller isn't coupled to the concrete backend.
-    """
-    return OllamaAdapter(model=model, host=OLLAMA_HOST, timeout=GEN_TIMEOUT_SEC)
+def make_generator_llm(model: str = MODEL_LLM) -> LLMAdapter:
+    """Return the LLM backing the langchain baseline's answer step."""
+    return OpenRouterAdapter(model=model, timeout=GEN_TIMEOUT_SEC)

@@ -44,16 +44,23 @@ class _Messages:
 class _Client:
     def __init__(self, response: _Response) -> None:
         self.messages = _Messages(response)
+        self.closed = False
+
+    async def __aenter__(self) -> _Client:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        self.closed = True
 
 
 async def test_complete_json_uses_tool_use_block(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = AnthropicAdapter(model="claude-x", api_key="k")
-    block = _ToolUseBlock(input={"category": "legal", "_confidence": 0.9})
+    block = _ToolUseBlock(input={"category": "legal", "extraction_confidence": 0.9})
     client = _Client(_Response(content=[_TextBlock(text="prelude"), block]))
     monkeypatch.setattr(adapter, "_new_client", lambda: client)
 
     result = await adapter.complete_json("prompt")
-    assert result == {"category": "legal", "_confidence": 0.9}
+    assert result == {"category": "legal", "extraction_confidence": 0.9}
 
     kwargs = client.messages.calls[0]
     assert kwargs["tool_choice"]["name"] == "emit_extraction"

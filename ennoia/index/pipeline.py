@@ -307,7 +307,7 @@ class Pipeline:
         # structured record (crucial for tabular backends).
         flat: dict[str, Any] = {name: None for name in self._superschema.all_field_names()}
         for instance in result.structural.values():
-            # ``_confidence`` rides on the instance via extra='allow'; strip before persist.
+            # ``extraction_confidence`` rides via extra='allow'; strip before persist.
             dumped = instance.model_dump(mode="json")
             dumped.pop(CONFIDENCE_KEY, None)
             ns = get_schema_namespace(type(instance))

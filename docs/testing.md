@@ -31,7 +31,7 @@ llm = MockLLMAdapter(
         "Extract case metadata": {
             "jurisdiction": "WA",
             "date_decided": "2023-03-15",
-            "_confidence": 0.95,
+            "extraction_confidence": 0.95,
         }
     },
     text_responses={
@@ -111,7 +111,7 @@ async def test_hybrid_search(mock_store, mock_llm, mock_embedding):
         "Extract basic document metadata": {
             "category": "legal",
             "doc_date": "2023-03-15",
-            "_confidence": 0.95,
+            "extraction_confidence": 0.95,
         }
     }
     mock_llm._text = {

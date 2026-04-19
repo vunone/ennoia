@@ -85,8 +85,8 @@ curl -s -X POST http://127.0.0.1:8080/search \
 
 ## `ennoia mcp` — MCP tool server
 
-Read-only surface. Agents can discover schemas, filter, search, and
-retrieve — but cannot index or delete. Supported transports:
+Read-only surface. Agents can discover schemas, search, and retrieve —
+but cannot index or delete. Supported transports:
 
 - `sse` — Server-Sent Events. Default for remote agents.
 - `http` — streamable-HTTP transport.
@@ -114,13 +114,25 @@ port is `8090`.
 | Tool | Signature | Purpose |
 |---|---|---|
 | `discover_schema()` | `() -> dict` | Unified discovery payload — structural fields, semantic indices. |
-| `filter(filters)` | `(filters: dict \| None) -> list[str]` | Source ids matching a structured filter. Pass the list back into `search` via `filter_ids`. |
-| `search(query, top_k, filter_ids, index)` | `(query: str, top_k=5, filter_ids=None, index=None) -> list[dict]` | Vector search. `filter_ids` restricts to a pre-filtered set; `index` picks a single semantic schema. |
+| `search(query, filter, limit, index)` | `(query: str, filter: dict \| None = None, limit: int = 10, index: str \| None = None) -> list[dict]` | Combined structural filter + vector search in one call. Runs the two-phase plan under the hood. |
 | `retrieve(id)` | `(id: str) -> dict \| None` | Full structured record for a `source_id`. |
 
-The canonical agent flow (per `.ref/USAGE.md §5`) is **discover → filter
-→ search(filter_ids=…) → retrieve**. See the [MCP agent cookbook](cookbook/mcp-agent.md)
-for a full worked example.
+The canonical agent flow (per `.ref/USAGE.md §5`) is **discover → search
+→ retrieve**. See the [MCP agent cookbook](cookbook/mcp-agent.md) for a
+full worked example.
+
+### Server-level instructions
+
+`create_mcp` registers a `FastMCP(instructions=…)` block that briefs the
+LLM on the canonical call order and the filter grammar. MCP clients
+surface these instructions to the model alongside the tool list, so an
+agent has the retrieval playbook before it picks its first tool. The
+block lives in [`ennoia/server/mcp.py`](https://github.com/vunone/ennoia/blob/main/ennoia/server/mcp.py)
+as the module-level `_MCP_INSTRUCTIONS` constant — if your deployment
+needs a different system prompt (different terminology, tighter scope,
+multi-tenant hints), build your own `FastMCP` instance in a custom
+factory the same way custom auth is wired in [Custom auth](#custom-auth)
+below.
 
 ### Python client example
 
@@ -141,17 +153,15 @@ async def main() -> None:
         schema = await client.call_tool("discover_schema", {})
         print(schema)
 
-        ids = await client.call_tool(
-            "filter",
-            {"filters": {"jurisdiction": "WA", "date_decided__gte": "2020-01-01"}},
-        )
-
         hits = await client.call_tool(
             "search",
             {
                 "query": "employer duty to accommodate disability",
-                "filter_ids": ids,
-                "top_k": 5,
+                "filter": {
+                    "jurisdiction": "WA",
+                    "date_decided__gte": "2020-01-01",
+                },
+                "limit": 5,
             },
         )
         for hit in hits:

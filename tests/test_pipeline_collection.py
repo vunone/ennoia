@@ -65,8 +65,8 @@ def _llm_two_parties_then_done() -> MockLLMAdapter:
         json_responses=[
             {
                 "entities_list": [
-                    {"name": "Acme", "year": 2024, "_confidence": 0.9},
-                    {"name": "Beta", "year": 2023, "_confidence": 0.8},
+                    {"name": "Acme", "year": 2024, "extraction_confidence": 0.9},
+                    {"name": "Beta", "year": 2023, "extraction_confidence": 0.8},
                 ],
                 "is_done": True,
             }
@@ -146,14 +146,14 @@ def test_reindex_drops_stale_collection_entries_on_composite_store() -> None:
         json_responses=[
             {
                 "entities_list": [
-                    {"name": "Acme", "year": 2024, "_confidence": 0.9},
-                    {"name": "Beta", "year": 2023, "_confidence": 0.8},
+                    {"name": "Acme", "year": 2024, "extraction_confidence": 0.9},
+                    {"name": "Beta", "year": 2023, "extraction_confidence": 0.8},
                 ],
                 "is_done": True,
             },
             {
                 "entities_list": [
-                    {"name": "Acme", "year": 2024, "_confidence": 0.9},
+                    {"name": "Acme", "year": 2024, "extraction_confidence": 0.9},
                 ],
                 "is_done": True,
             },
@@ -183,12 +183,12 @@ def test_collection_extend_emits_structural_child() -> None:
             # Collection: one Party entity that triggers Spotlight via extend().
             {
                 "entities_list": [
-                    {"name": "Meta", "year": 2024, "_confidence": 0.9},
+                    {"name": "Meta", "year": 2024, "extraction_confidence": 0.9},
                 ],
                 "is_done": True,
             },
             # Spotlight extraction triggered by Party.extend().
-            {"has_faang": True, "_confidence": 0.95},
+            {"has_faang": True, "extraction_confidence": 0.95},
         ]
     )
     pipeline = Pipeline(
@@ -238,12 +238,12 @@ def test_collection_extend_can_emit_another_collection() -> None:
         json_responses=[
             # Root collection
             {
-                "entities_list": [{"name": "r", "_confidence": 0.9}],
+                "entities_list": [{"name": "r", "extraction_confidence": 0.9}],
                 "is_done": True,
             },
             # Nested collection (triggered via Root.extend)
             {
-                "entities_list": [{"note": "n", "_confidence": 0.9}],
+                "entities_list": [{"note": "n", "extraction_confidence": 0.9}],
                 "is_done": True,
             },
         ]
@@ -296,13 +296,13 @@ def test_collection_deduplicates_when_emitted_twice_across_entities() -> None:
         json_responses=[
             {
                 "entities_list": [
-                    {"label": "a", "_confidence": 0.9},
-                    {"label": "b", "_confidence": 0.9},
+                    {"label": "a", "extraction_confidence": 0.9},
+                    {"label": "b", "extraction_confidence": 0.9},
                 ],
                 "is_done": True,
             },
             # Child collection runs only once.
-            {"entities_list": [{"tag": "t", "_confidence": 0.9}], "is_done": True},
+            {"entities_list": [{"tag": "t", "extraction_confidence": 0.9}], "is_done": True},
         ]
     )
     store = _composite_store()
@@ -334,7 +334,9 @@ def test_collection_entity_with_empty_template_is_not_persisted() -> None:
             return ""
 
     llm = MockLLMAdapter(
-        json_responses=[{"entities_list": [{"label": "a", "_confidence": 0.9}], "is_done": True}]
+        json_responses=[
+            {"entities_list": [{"label": "a", "extraction_confidence": 0.9}], "is_done": True}
+        ]
     )
     store = _composite_store()
     pipeline = Pipeline(
