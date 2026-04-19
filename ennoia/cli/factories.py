@@ -5,8 +5,10 @@ Each adapter is addressed by a URI-style string:
 - ``ollama:qwen3:0.6b``
 - ``openai:gpt-4o-mini``
 - ``anthropic:claude-sonnet-4-20250514``
+- ``openrouter:meta-llama/llama-3.1-8b-instruct``
 - ``sentence-transformers:all-MiniLM-L6-v2``
 - ``openai-embedding:text-embedding-3-small``
+- ``openrouter-embedding:openai/text-embedding-3-small``
 
 Stores use the same prefix scheme on the ``--store`` flag:
 
@@ -64,8 +66,13 @@ def parse_llm_spec(spec: str) -> LLMAdapter:
         from ennoia.adapters.llm.anthropic import AnthropicAdapter
 
         return AnthropicAdapter(model=model)
+    if prefix == "openrouter":
+        from ennoia.adapters.llm.openrouter import OpenRouterAdapter
+
+        return OpenRouterAdapter(model=model)
     raise typer.BadParameter(
-        f"Unknown LLM adapter prefix {prefix!r}. Expected one of: ollama, openai, anthropic."
+        f"Unknown LLM adapter prefix {prefix!r}. "
+        "Expected one of: ollama, openai, anthropic, openrouter."
     )
 
 
@@ -79,9 +86,13 @@ def parse_embedding_spec(spec: str) -> EmbeddingAdapter:
         from ennoia.adapters.embedding.openai import OpenAIEmbedding
 
         return OpenAIEmbedding(model=model)
+    if prefix == "openrouter-embedding":
+        from ennoia.adapters.embedding.openrouter import OpenRouterEmbedding
+
+        return OpenRouterEmbedding(model=model)
     raise typer.BadParameter(
         f"Unknown embedding adapter prefix {prefix!r}. "
-        "Expected one of: sentence-transformers, openai-embedding."
+        "Expected one of: sentence-transformers, openai-embedding, openrouter-embedding."
     )
 
 

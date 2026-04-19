@@ -26,6 +26,7 @@ loop stays responsive while CPU-bound model work runs.
 | `OllamaAdapter` | `ollama` | Local inference via `format="json"`. |
 | `OpenAIAdapter` | `openai` | `response_format={"type": "json_object"}`; `OPENAI_API_KEY` fallback. |
 | `AnthropicAdapter` | `anthropic` | Forced tool-use for structured output; `ANTHROPIC_API_KEY` fallback. |
+| `OpenRouterAdapter` | `openrouter` | OpenAI-compatible; reuses the `openai` SDK against `https://openrouter.ai/api/v1`; `OPENROUTER_API_KEY` fallback. |
 
 Every adapter creates a **fresh client per call**. httpx transports are
 event-loop bound, and the pipeline re-enters `asyncio.run()` from each
@@ -42,6 +43,7 @@ backend-specific and stays in the adapter.
 |---|---|---|
 | `SentenceTransformerEmbedding` | `sentence-transformers` | Lazy-loads the model on first call; `encode` runs in `asyncio.to_thread`. `embed_batch` forwards the full list to a single `encode` call. |
 | `OpenAIEmbedding` | `openai` | `AsyncOpenAI` client, fresh per call. `embed_batch` issues one `embeddings.create(input=[...])` round-trip for all texts. |
+| `OpenRouterEmbedding` | `openrouter` | `AsyncOpenAI` against OpenRouter's `/api/v1`; single-round-trip `embed_batch`; `OPENROUTER_API_KEY` fallback. |
 
 The pipeline uses `embed_batch` whenever a document has multiple semantic
 fields, so multi-semantic schemas only pay one network round-trip per

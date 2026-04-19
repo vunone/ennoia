@@ -22,7 +22,7 @@ The quickstart below needs nothing else. Other extras plug in when you need them
 
 | Extra | Adds |
 |---|---|
-| `openai`, `anthropic` | Hosted LLM adapters |
+| `openai`, `anthropic`, `openrouter` | Hosted LLM adapters |
 | `ollama` | Local LLM adapter |
 | `sentence-transformers` | Local embedding adapter |
 | `filesystem` | Parquet + NumPy persistent stores |
@@ -164,3 +164,9 @@ ennoia search "payment obligations and late fees" \
 ## License
 
 Apache 2.0. See [LICENSE.txt](https://github.com/vunone/ennoia/blob/main/LICENSE.txt) and [NOTICE](https://github.com/vunone/ennoia/blob/main/NOTICE).
+
+## Contributors
+
+- [Maks P.](https://maks.vun.one)
+
+Sponsored by: [Achiv :: Smart Market Research](https://achiv.com)

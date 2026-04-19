@@ -32,6 +32,7 @@ dependencies = [
 ollama = ["ollama>=0.3"]
 openai = ["openai>=1.40"]
 anthropic = ["anthropic>=0.34"]
+openrouter = ["ennoia[openai]"]
 sentence-transformers = ["sentence-transformers>=3", "numpy>=1.26"]
 filesystem = ["pyarrow>=15", "pandas>=2.1", "numpy>=1.26"]
 cli = ["typer>=0.12"]
@@ -60,7 +61,7 @@ benchmark = [
     "tqdm>=4.66",
 ]
 all = [
-    "ennoia[ollama,openai,anthropic,sentence-transformers,filesystem,cli,qdrant,pgvector,server,benchmark]",
+    "ennoia[ollama,openai,anthropic,openrouter,sentence-transformers,filesystem,cli,qdrant,pgvector,server,benchmark]",
 ]
 dev = [
     "pytest>=8",
