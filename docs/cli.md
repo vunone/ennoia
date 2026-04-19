@@ -133,8 +133,11 @@ Every `--llm` / `--embedding` argument is a URI of the form
 | `--llm` | `ollama` | `ollama:qwen3:0.6b` |
 | `--llm` | `openai` | `openai:gpt-4o-mini` |
 | `--llm` | `anthropic` | `anthropic:claude-sonnet-4-20250514` |
+| `--llm` | `openrouter` | `openrouter:meta-llama/llama-3.1-8b-instruct` |
 | `--embedding` | `sentence-transformers` | `sentence-transformers:all-MiniLM-L6-v2` |
 | `--embedding` | `openai-embedding` | `openai-embedding:text-embedding-3-small` |
+| `--embedding` | `openrouter-embedding` | `openrouter-embedding:openai/text-embedding-3-small` |
 
 API keys for OpenAI / Anthropic are read from `OPENAI_API_KEY` /
-`ANTHROPIC_API_KEY` if not passed explicitly.
+`ANTHROPIC_API_KEY` if not passed explicitly. OpenRouter (LLM and
+embeddings) reads `OPENROUTER_API_KEY`.

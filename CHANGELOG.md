@@ -9,6 +9,13 @@ from v0.1.0 onward.
 
 ### Added
 
+- **`OpenRouterAdapter` + `OpenRouterEmbedding`** — LLM and embedding
+  adapters against OpenRouter's OpenAI-compatible API
+  (`https://openrouter.ai/api/v1`). `OPENROUTER_API_KEY` environment
+  fallback. Exposed on the CLI as `openrouter:<model>` (for `--llm`) and
+  `openrouter-embedding:<model>` (for `--embedding`). Ships under a new
+  `openrouter` extra that aliases `openai` — the official `openai` SDK is
+  the canonical client, no new third-party dependency.
 - **`BaseCollection`** — third extraction kind alongside `BaseStructure`
   and `BaseSemantic`. Extracts a *list* of structured entities from a
   document by iteratively prompting the LLM with a `<PreviouslyExtracted>`
