@@ -152,7 +152,8 @@ continues to work for existing consumers.
 ## extend()
 
 `BaseStructure.extend()` runs after the instance is extracted and returns
-further schemas (structural or semantic) to apply to the same document.
+further schemas (structural, semantic, or collection) to apply to the
+same document.
 The populated parent instance is available through `self` — including its
 self-reported confidence via `self.confidence` — so conditional logic is
 just Python.
@@ -203,8 +204,10 @@ class CaseDocument(BaseStructure):
 attributes are optional:
 
 - `extensions: list[type]` — default `[]`. Must list every class
-  `extend()` may return, structural or semantic. Undeclared returns raise
-  `SchemaError` at index time.
+  `extend()` may return — structural, semantic, *or* collection. Only
+  `BaseStructure` entries contribute tabular fields to the superschema;
+  `BaseSemantic` and `BaseCollection` entries produce text that lands in
+  the vector store. Undeclared returns raise `SchemaError` at index time.
 - `namespace: str | None` — default `None` (flat merge). See below.
 
 Multi-level manifests are fine: an extension may itself declare

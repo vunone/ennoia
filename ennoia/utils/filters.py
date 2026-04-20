@@ -59,15 +59,26 @@ def split_filter_key(key: str) -> tuple[str, str]:
 
 
 def coerce_filter_value(field_value: Any, filter_value: Any) -> tuple[Any, Any]:
-    """Coerce ``filter_value`` to match ``field_value``'s type for fair comparison."""
-    if (
-        isinstance(field_value, date)
-        and not isinstance(field_value, datetime)
-        and isinstance(filter_value, str)
-    ):
-        filter_value = date.fromisoformat(filter_value)
-    elif isinstance(field_value, datetime) and isinstance(filter_value, str):
+    """Coerce ``filter_value`` to match ``field_value``'s type for fair comparison.
+
+    CLI ``--filter`` values arrive as strings; this helper promotes them to the
+    record field's native type so operators like ``gt``/``lt`` don't raise
+    ``TypeError`` when comparing e.g. ``float`` with ``str``. Branch order
+    matters: ``bool`` before ``int`` (``isinstance(True, int)`` is ``True``),
+    ``datetime`` before ``date`` (``datetime`` subclasses ``date``).
+    """
+    if not isinstance(filter_value, str):
+        return field_value, filter_value
+    if isinstance(field_value, bool):
+        filter_value = parse_bool(filter_value)
+    elif isinstance(field_value, datetime):
         filter_value = datetime.fromisoformat(filter_value)
+    elif isinstance(field_value, date):
+        filter_value = date.fromisoformat(filter_value)
+    elif isinstance(field_value, int):
+        filter_value = int(filter_value)
+    elif isinstance(field_value, float):
+        filter_value = float(filter_value)
     return field_value, filter_value
 
 

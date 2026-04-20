@@ -32,6 +32,7 @@ from ennoia.index.extractor import (
 )
 from ennoia.index.pipeline import Pipeline
 from ennoia.schema.base import BaseCollection, BaseSemantic, BaseStructure
+from ennoia.schema.roots import identify_roots
 from ennoia.utils.filters import parse_bool, split_filter_key
 
 __all__ = ["app"]
@@ -82,11 +83,16 @@ _register_server_commands()
 def load_schemas(
     path: Path,
 ) -> list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]]:
-    """Load schema classes from a Python module file.
+    """Load the top-level extractor schemas declared in ``path``.
 
-    Recognises subclasses of :class:`BaseStructure`, :class:`BaseSemantic`,
-    and :class:`BaseCollection` — the three extractor kinds — defined at
-    module level in the target file.
+    The loader prefers an explicit module-level ``ennoia_schema`` list
+    (written by ``ennoia craft`` and documented for hand-authored files).
+    When the variable is absent, every module-level
+    :class:`BaseStructure` / :class:`BaseSemantic` / :class:`BaseCollection`
+    subclass is discovered and reduced to the DAG roots via
+    :func:`ennoia.schema.roots.identify_roots`: if any class declares
+    ``Schema.extensions``, only those classes are returned; otherwise all
+    discovered classes are returned.
     """
     if not path.exists():
         raise typer.BadParameter(f"Schema file not found: {path}")
@@ -97,6 +103,9 @@ def load_schemas(
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+
+    if hasattr(module, "ennoia_schema"):
+        return _coerce_ennoia_schema(module.ennoia_schema, path)
 
     classes: list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]] = []
     for _, obj in inspect.getmembers(module, inspect.isclass):
@@ -113,7 +122,35 @@ def load_schemas(
         raise typer.BadParameter(
             f"No BaseStructure/BaseSemantic/BaseCollection subclasses found in {path}."
         )
-    return classes
+    return identify_roots(classes)
+
+
+def _coerce_ennoia_schema(
+    value: object, path: Path
+) -> list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]]:
+    """Validate the module-level ``ennoia_schema`` variable from ``path``."""
+    if not isinstance(value, list):
+        raise typer.BadParameter(
+            f"ennoia_schema in {path} must be a list of schema classes, got {type(value).__name__}."
+        )
+    entries: list[object] = value  # pyright: ignore[reportUnknownVariableType]
+    if not entries:
+        raise typer.BadParameter(
+            f"ennoia_schema in {path} is empty — declare at least one top-level schema."
+        )
+    roots: list[type[BaseStructure] | type[BaseSemantic] | type[BaseCollection]] = []
+    for entry in entries:
+        if inspect.isclass(entry) and issubclass(
+            entry, BaseStructure | BaseSemantic | BaseCollection
+        ):
+            roots.append(entry)
+            continue
+        name = entry.__name__ if inspect.isclass(entry) else repr(entry)
+        raise typer.BadParameter(
+            f"ennoia_schema in {path} contains {name!r}, which is not a "
+            "BaseStructure, BaseSemantic, or BaseCollection subclass."
+        )
+    return roots
 
 
 def _coerce_filter_value(raw_value: str, operator: str) -> Any:
@@ -194,31 +231,42 @@ def try_command(
     console = Console()
 
     async def run() -> None:
-        for index, cls in enumerate(classes):
-            if index > 0:
-                console.print()
+        async def _run_one(
+            cls: type[BaseStructure] | type[BaseSemantic] | type[BaseCollection],
+        ) -> tuple[str, Any]:
+            if issubclass(cls, BaseCollection):
+                entities, _ = await extract_collection(
+                    schema=cls, text=text, context_additions=[], llm=llm_adapter
+                )
+                return "collection", entities
             if issubclass(cls, BaseStructure):
                 instance, _ = await extract_structural(
                     schema=cls, text=text, context_additions=[], llm=llm_adapter
                 )
-                _render_header(console, "BaseStructure", cls.__name__, instance.confidence)
+                return "structural", instance
+            answer, confidence = await extract_semantic(schema=cls, text=text, llm=llm_adapter)
+            return "semantic", (answer, confidence)
+
+        results = await asyncio.gather(*(_run_one(cls) for cls in classes))
+        for index, (cls, (kind, payload)) in enumerate(zip(classes, results, strict=True)):
+            if index > 0:
+                console.print()
+            if kind == "structural":
+                _render_header(console, "BaseStructure", cls.__name__, payload.confidence)
                 dumped = {
-                    k: v for k, v in instance.model_dump(mode="json").items() if k != CONFIDENCE_KEY
+                    k: v for k, v in payload.model_dump(mode="json").items() if k != CONFIDENCE_KEY
                 }
                 for key, value in dumped.items():
                     _render_field(console, key, value)
-                extended = instance.extend()
+                extended = payload.extend()
                 if extended:
                     names = ", ".join(c.__name__ for c in extended)
                     console.print(f"  [dim]→ extend():[/dim] {names}", highlight=False)
-            elif issubclass(cls, BaseCollection):
-                entities, _ = await extract_collection(
-                    schema=cls, text=text, context_additions=[], llm=llm_adapter
-                )
+            elif kind == "collection":
                 _render_header(console, "BaseCollection", cls.__name__)
-                if not entities:
+                if not payload:
                     console.print("  [dim](no entities extracted)[/dim]", highlight=False)
-                for entity in entities:
+                for entity in payload:
                     console.print(
                         f"  [dim]-[/dim] [yellow](confidence: {entity.confidence:.2f})[/yellow]",
                         highlight=False,
@@ -231,7 +279,7 @@ def try_command(
                     for key, value in dumped.items():
                         _render_field(console, key, value, indent="      ")
             else:
-                answer, confidence = await extract_semantic(schema=cls, text=text, llm=llm_adapter)
+                answer, confidence = payload
                 _render_header(console, "BaseSemantic", cls.__name__, confidence)
                 console.print(f"  {answer!r}", highlight=False)
 

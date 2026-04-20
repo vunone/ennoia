@@ -267,6 +267,89 @@ def test_index_then_search_respects_collection_flag(
     assert (store_dir / "emails").is_dir()
 
 
+_NUMERIC_SCHEMA_MODULE = '''
+from ennoia import BaseStructure, BaseSemantic
+
+class Product(BaseStructure):
+    """Extract the product price from the document body."""
+    price: float
+
+class ProductSummary(BaseSemantic):
+    """What does the document describe?"""
+'''
+
+
+class _FakePriceLLM(LLMAdapter):
+    async def complete_json(self, prompt: str) -> dict[str, object]:
+        # The doc body embeds the price verbatim as "PRICE=<float>" so we can
+        # read it back deterministically without depending on a real LLM.
+        for token in prompt.split():
+            if token.startswith("PRICE="):
+                return {"price": float(token[len("PRICE=") :]), "extraction_confidence": 0.9}
+        return {"price": 0.0, "extraction_confidence": 0.9}
+
+    async def complete_text(self, prompt: str) -> str:
+        return "Product summary."
+
+
+def test_search_filter_coerces_numeric_string(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Regression for v0.4.2 bug: `--filter price__gt=1000` used to raise
+    # TypeError: '>' not supported between instances of 'float' and 'str'
+    # because the CLI string was never promoted to float at eval time.
+    monkeypatch.setattr(cli_main, "parse_llm_spec", lambda spec: _FakePriceLLM())
+    monkeypatch.setattr(cli_main, "parse_embedding_spec", lambda spec: _FakeEmbedding())
+
+    schema = tmp_path / "product_schema.py"
+    schema.write_text(_NUMERIC_SCHEMA_MODULE)
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "cheap.txt").write_text("PRICE=50.0")
+    (docs_dir / "pricey.txt").write_text("PRICE=1500.0")
+    store_dir = tmp_path / "idx"
+
+    runner = CliRunner()
+    idx = runner.invoke(
+        cli_main.app,
+        [
+            "index",
+            str(docs_dir),
+            "--schema",
+            str(schema),
+            "--store",
+            str(store_dir),
+            "--llm",
+            "fake:m",
+            "--embedding",
+            "fake:m",
+        ],
+    )
+    assert idx.exit_code == 0, idx.output
+
+    srch = runner.invoke(
+        cli_main.app,
+        [
+            "search",
+            "product",
+            "--schema",
+            str(schema),
+            "--store",
+            str(store_dir),
+            "--filter",
+            "price__gt=1000",
+            "--llm",
+            "fake:m",
+            "--embedding",
+            "fake:m",
+        ],
+    )
+    assert srch.exit_code == 0, srch.output
+    assert "pricey.txt" in srch.output
+    assert "cheap.txt" not in srch.output
+
+
 def test_search_rejects_invalid_filter(
     patched_adapters: None, schema_file: Path, tmp_path: Path
 ) -> None:
@@ -347,6 +430,165 @@ class Doc(BaseStructure):
     classes = cli_main.load_schemas(schema_file)
     names = [c.__name__ for c in classes]
     assert names == ["Doc"]
+
+
+# ---------------------------------------------------------------------------
+# ``ennoia_schema`` entrypoint variable — preferred source when declared,
+# fallback to root autodiscovery when absent.
+# ---------------------------------------------------------------------------
+
+
+def test_load_schemas_prefers_ennoia_schema_variable(tmp_path: Path) -> None:
+    # Module declares three classes but opts A and B in via ennoia_schema —
+    # C is excluded.
+    schema_file = tmp_path / "explicit.py"
+    schema_file.write_text(
+        '''
+from ennoia import BaseStructure
+
+
+class A(BaseStructure):
+    """A."""
+    x: str
+
+
+class B(BaseStructure):
+    """B."""
+    y: str
+
+
+class C(BaseStructure):
+    """C."""
+    z: str
+
+
+ennoia_schema = [A, B]
+'''
+    )
+    classes = cli_main.load_schemas(schema_file)
+    assert [c.__name__ for c in classes] == ["A", "B"]
+
+
+def test_load_schemas_fallback_returns_parents_when_extensions_present(
+    tmp_path: Path,
+) -> None:
+    # No ennoia_schema → identify_roots picks the class that declares
+    # Schema.extensions as the sole root.
+    schema_file = tmp_path / "dag.py"
+    schema_file.write_text(
+        '''
+from typing import ClassVar
+
+from ennoia import BaseSemantic, BaseStructure
+
+
+class Product(BaseStructure):
+    """Product fields."""
+    name: str
+
+
+class Summary(BaseSemantic):
+    """Summary?"""
+
+
+class Page(BaseStructure):
+    """Page classifier."""
+    kind: str
+
+    class Schema:
+        extensions: ClassVar[list[type]] = [Product, Summary]
+'''
+    )
+    classes = cli_main.load_schemas(schema_file)
+    assert [c.__name__ for c in classes] == ["Page"]
+
+
+def test_load_schemas_fallback_returns_all_when_no_extensions(tmp_path: Path) -> None:
+    # No ennoia_schema, no class has extensions → every class is a root.
+    schema_file = tmp_path / "flat.py"
+    schema_file.write_text(
+        '''
+from ennoia import BaseSemantic, BaseStructure
+
+
+class Meta(BaseStructure):
+    """Meta."""
+    title: str
+
+
+class Summary(BaseSemantic):
+    """Summary?"""
+'''
+    )
+    classes = cli_main.load_schemas(schema_file)
+    assert sorted(c.__name__ for c in classes) == ["Meta", "Summary"]
+
+
+def test_load_schemas_rejects_empty_ennoia_schema(tmp_path: Path) -> None:
+    import typer
+
+    schema_file = tmp_path / "empty.py"
+    schema_file.write_text(
+        '''
+from ennoia import BaseStructure
+
+
+class Doc(BaseStructure):
+    """Doc."""
+    title: str
+
+
+ennoia_schema = []
+'''
+    )
+    with pytest.raises(typer.BadParameter, match="is empty"):
+        cli_main.load_schemas(schema_file)
+
+
+def test_load_schemas_rejects_non_list_ennoia_schema(tmp_path: Path) -> None:
+    import typer
+
+    schema_file = tmp_path / "bad.py"
+    schema_file.write_text(
+        '''
+from ennoia import BaseStructure
+
+
+class Doc(BaseStructure):
+    """Doc."""
+    title: str
+
+
+ennoia_schema = "Doc"
+'''
+    )
+    with pytest.raises(typer.BadParameter, match="must be a list"):
+        cli_main.load_schemas(schema_file)
+
+
+def test_load_schemas_rejects_non_schema_entry_in_ennoia_schema(tmp_path: Path) -> None:
+    import typer
+
+    schema_file = tmp_path / "bad_entry.py"
+    schema_file.write_text(
+        '''
+from ennoia import BaseStructure
+
+
+class Doc(BaseStructure):
+    """Doc."""
+    title: str
+
+
+class Helper:
+    pass
+
+
+ennoia_schema = [Helper]
+'''
+    )
+    with pytest.raises(typer.BadParameter, match="not a BaseStructure, BaseSemantic"):
+        cli_main.load_schemas(schema_file)
 
 
 def test_parse_filters_rejects_missing_equals() -> None:
