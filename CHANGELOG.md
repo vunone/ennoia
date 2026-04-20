@@ -5,6 +5,19 @@ All notable changes to Ennoia are documented here. The format is based on
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v0.1.0 onward.
 
+## [0.4.1] — 2026-04-20
+
+### Fixed
+
+- **CI green across the Python 3.11 / 3.12 / 3.13 matrix.** Pyright
+  strict flagged `files(__package__)` in `ennoia/prompts/__init__.py`
+  because `__package__` is typed as `str | None`; switched to
+  `files(__name__)`, which is always a non-optional module name. The
+  `ennoia try` `--schema`-missing test (`tests/test_cli_config.py`) also
+  broke on CI because Rich-rendered Typer `BadParameter` output wraps
+  `--schema` in ANSI color runs that defeat literal substring asserts;
+  the test now strips ANSI escapes before matching.
+
 ## [0.4.0] — 2026-04-19
 
 ### Fixed
