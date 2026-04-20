@@ -227,10 +227,50 @@ confirm each item:
   generic default on legal documents — but keep it corpus-wide, not
   tied to the sample's topic).
 
+## `ennoia_schema` — the entrypoint variable
+
+`ennoia craft` appends a deterministic module-level list to every file it
+writes:
+
+```python
+# `ennoia_schema` lists only the top-level DAG schemas — classes that other
+# schemas don't reference via `Schema.extensions`. Children are reached
+# transitively at index time through `extend()`, so they don't belong here.
+ennoia_schema = [Metadata, QuestionAnswer, Summary]
+```
+
+`ennoia try | index | search | api | mcp` all read this variable through
+`--schema` and pass it straight to `Pipeline(schemas=...)`. You can also
+import it directly:
+
+```python
+from schema import ennoia_schema
+
+pipeline = Pipeline(schemas=ennoia_schema, store=..., llm=..., embedding=...)
+```
+
+Only **top-level** (root) schemas belong in the list — classes that no
+other schema reaches through `Schema.extensions`. Children run
+transitively via `extend()`; listing them here would run them twice.
+
+### Hand-written schema files
+
+The variable is optional — if absent, the CLI falls back to a rule that
+matches the DAG structure:
+
+- If any class declares `Schema.extensions` → those classes are treated
+  as the roots (everything else is a leaf reached transitively).
+- Otherwise (no class has `extensions`) → every declared class is a root.
+
+An empty `ennoia_schema = []` is rejected so the error is loud: declare
+at least one root or remove the variable.
+
 ## `ennoia try` — iterate on schemas
 
 Run a single extraction pass against one document and print the fields,
-confidences, and `extend()` chain. Nothing is written to a store.
+confidences, and `extend()` chain. Nothing is written to a store. Each
+top-level extractor runs in parallel — great for quick iteration on a
+document with multiple independent schemas.
 
 Confidence is a **per-extraction** scalar for `BaseStructure` /
 `BaseSemantic` (shown once on the schema header), and **per-entity** for

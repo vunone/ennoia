@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ennoia.craft.codeblock import CraftParseError, extract_python_block
+from ennoia.craft.entrypoint import append_entrypoint
 from ennoia.craft.prompts import build_retry_prompt, build_system_prompt, build_user_prompt
 from ennoia.craft.validate import validate_schema_file
 
@@ -92,6 +93,7 @@ async def run_craft_loop(
                 on_attempt(attempt, "validating schema")
             validation_error = validate_schema_file(output_path)
             if validation_error is None:
+                append_entrypoint(output_path)
                 return
             last_error = validation_error
 

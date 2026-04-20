@@ -519,6 +519,11 @@ def test_craft_cli_happy_path(patched_craft_llm: _FakeCraftLLM, tmp_path: Path) 
     assert "Review the draft" in result.output
     # The crafted file must also be loadable via the downstream CLI entrypoint.
     assert [c.__name__ for c in cli_main.load_schemas(output)] == ["Product"]
+    # The craft loop appends a deterministic ``ennoia_schema`` entrypoint
+    # so the resulting file can be dropped into ``Pipeline(schemas=...)``.
+    out_text = output.read_text(encoding="utf-8")
+    assert "ennoia_schema = [Product]" in out_text
+    assert "# `ennoia_schema` lists only the top-level DAG schemas" in out_text
 
 
 def test_craft_cli_improves_existing(patched_craft_llm: _FakeCraftLLM, tmp_path: Path) -> None:
@@ -775,6 +780,70 @@ class Mention(BaseCollection):
     assert "Mention" in result.output
     assert "Alpha" in result.output
     assert "Beta" in result.output
+
+
+def test_try_command_runs_extractors_in_parallel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # An asyncio.Barrier(3) inside the fake LLM forces all three calls to
+    # rendezvous before any returns. A sequential loop would deadlock since
+    # extractor N would never start until N-1 completed; asyncio.gather
+    # releases all three concurrently.
+    import asyncio
+
+    barrier = asyncio.Barrier(3)
+
+    class _BarrierLLM(LLMAdapter):
+        async def complete_json(self, prompt: str) -> dict[str, Any]:
+            await barrier.wait()
+            return {"title": "t", "extraction_confidence": 0.9}
+
+        async def complete_text(self, prompt: str) -> str:  # pragma: no cover
+            raise NotImplementedError
+
+    monkeypatch.setattr(cli_main, "parse_llm_spec", lambda spec: _BarrierLLM())
+    schema = tmp_path / "schemas.py"
+    schema.write_text(
+        '''\
+from ennoia import BaseStructure
+
+
+class A(BaseStructure):
+    """A."""
+    title: str
+
+
+class B(BaseStructure):
+    """B."""
+    title: str
+
+
+class C(BaseStructure):
+    """C."""
+    title: str
+'''
+    )
+    doc = tmp_path / "doc.txt"
+    doc.write_text("body")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "try",
+            str(doc),
+            "--schema",
+            str(schema),
+            "--llm",
+            "fake:m",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Render order follows declaration order regardless of completion order.
+    a_pos = result.output.index("BaseStructure]: A")
+    b_pos = result.output.index("BaseStructure]: B")
+    c_pos = result.output.index("BaseStructure]: C")
+    assert a_pos < b_pos < c_pos
 
 
 def test_try_command_handles_empty_collection(

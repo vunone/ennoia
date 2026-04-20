@@ -1,7 +1,0 @@
-pipeline,difficulty,n,precision@5,precision@10,hit@5,hit@10,correct,partial,hallucinated,abstained
-ennoia,broad,1,0.2,0.1,1.0,1.0,1.0,0.0,0.0,0.0
-ennoia,high,1,0.2,0.1,1.0,1.0,1.0,0.0,0.0,0.0
-ennoia,medium,1,0.2,0.1,1.0,1.0,1.0,0.0,0.0,0.0
-langchain,broad,1,0.2,0.1,1.0,1.0,1.0,0.0,0.0,0.0
-langchain,high,1,0.2,0.1,1.0,1.0,1.0,0.0,0.0,0.0
-langchain,medium,1,0.2,0.1,1.0,1.0,0.0,0.0,1.0,0.0

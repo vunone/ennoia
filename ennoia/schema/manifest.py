@@ -112,17 +112,8 @@ def _validate_field_names(cls: type[BaseStructure], namespace: str | None) -> No
                 )
 
 
-def _validate_extension_entries(cls: type[BaseStructure], extensions: Iterable[type]) -> None:
-    for ext in extensions:
-        if not issubclass(ext, BaseStructure | BaseSemantic):
-            raise SchemaError(
-                f"{cls.__name__}.Schema.extensions contains {ext.__name__!r}, which is "
-                "not a BaseStructure or BaseSemantic subclass."
-            )
-
-
-def _validate_extension_entries_for_collection(
-    cls: type[BaseCollection], extensions: Iterable[type]
+def _validate_extension_entries(
+    cls: type[BaseStructure] | type[BaseCollection], extensions: Iterable[type]
 ) -> None:
     for ext in extensions:
         if not issubclass(ext, BaseStructure | BaseSemantic | BaseCollection):
@@ -181,7 +172,7 @@ def build_manifest(
 
         if issubclass(cls, BaseCollection):
             extensions = get_schema_extensions(cls)
-            _validate_extension_entries_for_collection(cls, extensions)
+            _validate_extension_entries(cls, extensions)
             nodes.append(ManifestNode(cls=cls, namespace=None, depth=depth))
             for ext in extensions:
                 queue.append((ext, depth + 1, (*path, cls)))

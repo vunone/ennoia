@@ -119,11 +119,37 @@ def test_coerce_preserves_already_typed_values():
         (None, 5),
         (5, None),
         (True, False),
-        (3.14, "3.14"),  # numeric fields don't auto-parse strings
     ],
 )
 def test_coerce_passes_through_non_date_values(field_value: Any, filter_value: Any):
     assert coerce_filter_value(field_value, filter_value) == (field_value, filter_value)
+
+
+def test_coerce_float_string_to_float():
+    # Reported bug: `ennoia search --filter price__gt=1000` crashed because
+    # "1000" stayed a string at comparison time.
+    field, filt = coerce_filter_value(1000.5, "1000")
+    assert field == 1000.5
+    assert filt == 1000.0
+    assert isinstance(filt, float)
+
+
+def test_coerce_int_string_to_int():
+    field, filt = coerce_filter_value(42, "7")
+    assert (field, filt) == (42, 7)
+    assert isinstance(filt, int) and not isinstance(filt, bool)
+
+
+def test_coerce_bool_string_to_bool():
+    assert coerce_filter_value(True, "false") == (True, False)
+    assert coerce_filter_value(False, "true") == (False, True)
+
+
+def test_coerce_bool_field_wins_over_int_branch():
+    # ``isinstance(True, int)`` is True in Python; bool must be checked first
+    # so ``"1"`` is parsed as the boolean ``True``, not the integer ``1``.
+    _, filt = coerce_filter_value(True, "1")
+    assert filt is True
 
 
 def test_coerce_raises_on_malformed_iso_string():
@@ -134,6 +160,15 @@ def test_coerce_raises_on_malformed_iso_string():
         coerce_filter_value(date(2024, 1, 1), "not-a-date")
     with pytest.raises(ValueError):
         coerce_filter_value(datetime(2024, 1, 1), "not-a-datetime")
+
+
+def test_coerce_raises_on_malformed_numeric_string():
+    with pytest.raises(ValueError):
+        coerce_filter_value(5, "not-an-int")
+    with pytest.raises(ValueError):
+        coerce_filter_value(3.14, "not-a-float")
+    with pytest.raises(ValueError):
+        coerce_filter_value(True, "not-a-bool")
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +202,15 @@ def test_evaluate_condition_numeric_operators(op: str, value: int, expected: boo
 def test_evaluate_condition_rejects_unknown_operator():
     with pytest.raises(ValueError, match="Unknown filter operator"):
         evaluate_condition({"x": 1}, "x", "bogus", 1)
+
+
+def test_evaluate_condition_coerces_string_rhs_for_numeric_fields():
+    # Regression: CLI --filter price__gt=1000 arrives with value="1000"; the
+    # record carries a native float. Comparison must succeed, not TypeError.
+    assert evaluate_condition({"price": 1500.0}, "price", "gt", "1000") is True
+    assert evaluate_condition({"price": 500.0}, "price", "gt", "1000") is False
+    assert evaluate_condition({"count": 10}, "count", "lte", "10") is True
+    assert evaluate_condition({"in_stock": True}, "in_stock", "eq", "true") is True
 
 
 # ---------------------------------------------------------------------------

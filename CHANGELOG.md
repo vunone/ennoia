@@ -5,18 +5,45 @@ All notable changes to Ennoia are documented here. The format is based on
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v0.1.0 onward.
 
-## [0.4.1] — 2026-04-20
+## [0.4.2] — 2026-04-20
 
 ### Fixed
 
-- **CI green across the Python 3.11 / 3.12 / 3.13 matrix.** Pyright
-  strict flagged `files(__package__)` in `ennoia/prompts/__init__.py`
-  because `__package__` is typed as `str | None`; switched to
-  `files(__name__)`, which is always a non-optional module name. The
-  `ennoia try` `--schema`-missing test (`tests/test_cli_config.py`) also
-  broke on CI because Rich-rendered Typer `BadParameter` output wraps
-  `--schema` in ANSI color runs that defeat literal substring asserts;
-  the test now strips ANSI escapes before matching.
+- **`--filter` on numeric/boolean fields no longer raises `TypeError`.**
+  `coerce_filter_value` now promotes CLI string RHS values to `int`,
+  `float`, or `bool` when the record field carries that type, matching
+  the existing behavior for `date`/`datetime`. Previously a command
+  like `ennoia search '...' --filter 'price__gt=1000'` crashed with
+  `'>' not supported between instances of 'float' and 'str'` because
+  the value stayed a string at comparison time.
+- **`BaseStructure.Schema.extensions` now accepts `BaseCollection`
+  entries.** The structural validator previously allowed only
+  `BaseStructure` and `BaseSemantic`, even though the runtime DAG routes
+  `extend()` returns of all three kinds. Schemas like a `Page`
+  classifier that branches into a `QuestionAnswer` collection at index
+  time now build their manifest without raising `SchemaError`. Only
+  `BaseStructure` entries contribute tabular fields to the superschema;
+  collection/semantic entries still only produce text for the vector
+  store.
+
+### Added
+
+- **`ennoia_schema` module-level entrypoint variable.** `ennoia craft`
+  now deterministically appends a trailing
+  `ennoia_schema = [Root1, Root2, …]` list (with a leading comment) to
+  every generated schema file. `ennoia try | index | search | api | mcp`
+  read this variable through `--schema` and hand it straight to
+  `Pipeline(schemas=...)`. When the variable is absent, the loader falls
+  back to a DAG-aware rule: if any class declares `Schema.extensions`,
+  those classes are the roots; otherwise every class is a root. An
+  empty `ennoia_schema = []` is rejected.
+
+### Changed
+
+- **`ennoia try` runs extractors in parallel.** The debug command now
+  dispatches each top-level extractor through `asyncio.gather` and
+  renders the results in declaration order — previously it serialised
+  every schema through a sequential `for` loop.
 
 ## [0.4.0] — 2026-04-19
 

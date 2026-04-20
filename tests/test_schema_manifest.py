@@ -226,7 +226,7 @@ def test_extension_entry_must_be_base_subclass() -> None:
             extensions: ClassVar[list[type]] = []
 
     Bad.Schema.extensions = [NotASchema]
-    with pytest.raises(SchemaError, match="not a BaseStructure or BaseSemantic"):
+    with pytest.raises(SchemaError, match="not a BaseStructure, BaseSemantic"):
         build_manifest([Bad])
 
 
@@ -349,3 +349,59 @@ def test_collection_extensions_must_be_schema_subclass() -> None:
 
     with pytest.raises(SchemaError, match="not a BaseStructure, BaseSemantic"):
         build_manifest([Coll])
+
+
+def test_structure_can_extend_into_collection() -> None:
+    # A BaseStructure is allowed to route a document into a BaseCollection
+    # via ``extend()`` — the validator now admits BaseCollection entries
+    # alongside BaseStructure and BaseSemantic in structural extensions.
+    from ennoia.schema.base import BaseCollection
+
+    class Question(BaseCollection):
+        """Q&A pairs."""
+
+        q: str
+        a: str
+
+    class Page(BaseStructure):
+        """Page classifier."""
+
+        kind: str
+
+        class Schema:
+            extensions: ClassVar[list[type]] = [Question]
+
+    manifest = build_manifest([Page])
+    structural_classes = {n.cls for n in manifest.structurals()}
+    collection_classes = {n.cls for n in manifest.collections()}
+    assert structural_classes == {Page}
+    assert collection_classes == {Question}
+
+
+def test_superschema_ignores_collection_reached_from_structural() -> None:
+    # A collection reached via a structural's extensions must not contribute
+    # tabular fields to the superschema — only BaseStructure nodes do.
+    from ennoia.schema.base import BaseCollection
+    from ennoia.schema.merging import build_superschema
+
+    class QA(BaseCollection):
+        """Q&A pairs."""
+
+        q: str
+        a: str
+
+    class Page(BaseStructure):
+        """Page classifier."""
+
+        kind: str
+
+        class Schema:
+            extensions: ClassVar[list[type]] = [QA]
+
+    manifest = build_manifest([Page])
+    superschema = build_superschema(manifest)
+    # QA's fields (q, a) must not appear as tabular entries.
+    field_names = superschema.all_field_names()
+    assert "q" not in field_names
+    assert "a" not in field_names
+    assert "kind" in field_names
